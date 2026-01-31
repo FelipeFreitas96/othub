@@ -1,7 +1,7 @@
 /**
  * Creature – 1:1 com OTClient src/client/creature.cpp
  * Thing que desenha a si mesmo via draw().
- * Walk state: m_entry.walking, m_entry.walkAnimationPhase, m_entry.walkOffset (ou estado em MapStore.walkStates).
+ * Walk state: m_walking, m_walkOffset (dentro da própria Creature, como no OTC).
  */
 
 const TILE_PIXELS = 32
@@ -18,6 +18,91 @@ const DirSouthWest = 7
 export class Creature {
   constructor(entry) {
     this.m_entry = entry || {}
+    // OTC: walk state dentro da Creature (m_walking, m_walkOffset, etc.)
+    this.m_walking = false
+    this.m_walkOffsetX = 0
+    this.m_walkOffsetY = 0
+    this.m_fromPos = null
+    this.m_toPos = null
+    this.m_startTime = 0
+    this.m_stepDuration = 300
+    this.m_direction = DirSouth
+    this.m_walkedPixels = 0
+    this.m_walkAnimationPhase = 0
+    this.m_footStep = 0
+    this.m_lastFootTime = 0
+  }
+
+  /** Id da criatura (para lookup no map). */
+  getId() {
+    return this.m_entry?.creatureId ?? this.m_entry?.id ?? null
+  }
+
+  /**
+   * OTC Creature::walk() – inicia walk de fromPos para toPos.
+   */
+  walk(fromPos, toPos) {
+    if (!fromPos || !toPos || (fromPos.x === toPos.x && fromPos.y === toPos.y && fromPos.z === toPos.z)) return
+    this.m_walking = true
+    this.m_fromPos = { ...fromPos }
+    this.m_toPos = { ...toPos }
+    this.m_startTime = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    this.m_stepDuration = Creature.getStepDuration(this.m_entry, fromPos, toPos)
+    this.m_direction = Creature.getDirectionFromPosition(fromPos, toPos)
+    this.m_walkOffsetX = 0
+    this.m_walkOffsetY = 0
+    this.m_walkedPixels = 0
+    this.m_walkAnimationPhase = 0
+    this.m_footStep = 0
+    this.m_lastFootTime = 0
+  }
+
+  /**
+   * OTC Creature::stopWalk() – para o walk.
+   */
+  stopWalk() {
+    this.m_walking = false
+    this.m_walkOffsetX = 0
+    this.m_walkOffsetY = 0
+    this.m_walkedPixels = 0
+    this.m_walkAnimationPhase = 0
+    this.m_fromPos = null
+    this.m_toPos = null
+  }
+
+  /**
+   * OTC Creature::updateWalk() – atualiza offset e animação; retorna true se o walk terminou neste frame.
+   */
+  updateWalk(now, types) {
+    if (!this.m_walking || !this.m_fromPos || !this.m_toPos) return false
+    const tt = types?.getCreature?.(this.m_entry?.outfit?.lookType ?? this.m_entry?.lookType ?? 0)
+    const phases = tt?.getAnimationPhases?.() ?? tt?.phases ?? 1
+    const state = {
+      startTime: this.m_startTime,
+      stepDuration: this.m_stepDuration,
+      direction: this.m_direction,
+      walking: this.m_walking,
+      walkedPixels: this.m_walkedPixels,
+      walkAnimationPhase: this.m_walkAnimationPhase,
+      walkOffsetX: this.m_walkOffsetX,
+      walkOffsetY: this.m_walkOffsetY,
+      footStep: this.m_footStep,
+      lastFootTime: this.m_lastFootTime,
+    }
+    Creature.updateWalkState(state, now, phases)
+    this.m_walkedPixels = state.walkedPixels
+    this.m_walkAnimationPhase = state.walkAnimationPhase ?? 0
+    this.m_walkOffsetX = state.walkOffsetX ?? 0
+    this.m_walkOffsetY = state.walkOffsetY ?? 0
+    this.m_walking = state.walking
+    this.m_footStep = state.footStep ?? 0
+    this.m_lastFootTime = state.lastFootTime ?? 0
+    return !this.m_walking
+  }
+
+  /** Retorna offset em pixels para desenho (OTC: getWalkOffset). */
+  getWalkOffset() {
+    return { x: this.m_walkOffsetX, y: this.m_walkOffsetY }
   }
 
   /** OTC: equivalente ao creature type (outfit). Retorna o ThingType do lookType. */
@@ -33,9 +118,16 @@ export class Creature {
   isItem() { return false }
   isCreature() { return true }
   /** OTC: m_walking – criatura está em passo de movimento. */
-  isWalking() { return !!(this.m_entry?.walking) }
+  isWalking() { return !!this.m_walking }
   getWidth(pipeline) { return this.getThingType(pipeline)?.getWidth?.() ?? 1 }
   getHeight(pipeline) { return this.getThingType(pipeline)?.getHeight?.() ?? 1 }
+
+  /** OTC Position::translatedToDirection(direction) – nova posição um tile na direção. */
+  static positionTranslatedToDirection(pos, direction) {
+    const dx = [0, 1, 0, -1, 1, -1, 1, -1][direction] ?? 0
+    const dy = [-1, 0, 1, 0, -1, -1, 1, 1][direction] ?? 0
+    return { x: pos.x + dx, y: pos.y + dy, z: pos.z }
+  }
 
   /**
    * OTC Position::getDirectionFromPosition() – direção de from para to.
@@ -141,10 +233,11 @@ export class Creature {
     const ct = this.getThingType(pipeline)
     const phases = ct?.getAnimationPhases?.() ?? ct?.phases ?? 1
     if (phases <= 1) return 0
-    const walking = !!this.m_entry?.walking
-    if (walking) {
-      const walkPhase = this.m_entry?.walkAnimationPhase ?? 0
-      return Math.min(walkPhase, phases - 1)
+    if (this.m_walking) {
+      return Math.min(this.m_walkAnimationPhase, phases - 1)
+    }
+    if (this.m_entry?.walking) {
+      return Math.min(this.m_entry.walkAnimationPhase ?? 0, phases - 1)
     }
     if (!animate) return 0
     if (!ct?.isAnimateAlways?.()) return 0
@@ -163,8 +256,9 @@ export class Creature {
     if (!ct) return
     const things = pipeline.thingsRef?.current
     if (!things?.types) return
-    const dest = { tileX, tileY, drawElevationPx, zOff, tileZ, pixelOffsetX, pixelOffsetY }
-    const dir = this.m_entry?.direction ?? 0
+    const off = this.m_walking ? this.getWalkOffset() : { x: 0, y: 0 }
+    const dest = { tileX, tileY, drawElevationPx, zOff, tileZ, pixelOffsetX: pixelOffsetX + off.x, pixelOffsetY: pixelOffsetY + off.y }
+    const dir = this.m_walking ? this.m_direction : (this.m_entry?.direction ?? 0)
     const px = ct.patternX ?? ct.m_numPatternX ?? 1
     const xPattern = px >= 4 ? (dir & 3) : 0
     const yPattern = 0

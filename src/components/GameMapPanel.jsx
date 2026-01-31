@@ -2,7 +2,10 @@
 import { useEffect, useRef } from 'react'
 import { MapView } from '../services/render/MapView.js'
 import { getThings, loadThings } from '../services/things/things.js'
-import { sendMove, GAME_CLIENT_OPCODES } from '../services/protocol/gameProtocol.js'
+import { sendMove, GAME_CLIENT_OPCODES, OPCODE_TO_DIRECTION } from '../services/protocol/gameProtocol.js'
+import { isFeatureEnabled } from '../services/protocol/features.js'
+import { localPlayer } from '../services/game/LocalPlayer.js'
+import { getMapStore } from '../services/protocol/mapStore.js'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 
@@ -22,63 +25,46 @@ export default function GameMapPanel() {
     if (!host) return
 
     const thingsRef = { current: getThings() }
-    const mapState = window.__otMapState
+    const mapStore = getMapStore()
 
     mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
-    if (mapState) {
-      mapViewRef.current.setMapState(mapState)
+    if (mapStore.center?.x != null) {
+      mapViewRef.current.setMapState(mapStore.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
-    loadThings(mapState?.version || 860).then((t) => {
+    loadThings(860).then((t) => {
       thingsRef.current = t
-      if (mapViewRef.current && mapState) {
-        mapViewRef.current.setMapState(mapState)
+      if (mapViewRef.current && mapStore.center?.x != null) {
+        mapViewRef.current.setMapState(mapStore.getMapStateForView())
         mapViewRef.current.draw()
       }
     })
 
-    const onMap = (e) => {
-      mapViewRef.current?.setMapState(e.detail)
+    const onMap = () => {
+      const state = getMapStore().getMapStateForView()
+      mapViewRef.current?.setMapState(state)
+      mapViewRef.current?.requestVisibleTilesCacheUpdate()
       mapViewRef.current?.draw()
     }
 
-    const onMapMove = (e) => {
-      const mapStore = typeof window !== 'undefined' ? window.__otMapStore : null
-      if (!mapStore?.center || !mapViewRef.current) return
-      const { fromPos } = e?.detail ?? {}
-      const playerId = typeof window !== 'undefined' ? window.__otPlayerId : null
-      // 0x65–0x68: servidor só envia nova linha/coluna; jogador não está no tile novo. Precisamos atualizar tiles (skipTileUpdate = false) para não desincronizar.
-      if (fromPos && playerId != null) {
-        const playerData = mapStore.getCreature(playerId) || {}
-        mapStore.startWalk(playerId, fromPos, mapStore.center, playerData, false)
-      }
-      const pos = mapStore.center
-      const zMin = Math.max(0, pos.z - 2)
-      const zMax = Math.min(15, pos.z + 2)
-      const snap = mapStore.snapshotFloors(zMin, zMax)
-      const current = snap.floors?.[pos.z] ?? mapStore.snapshotFloor(pos.z)
-      mapViewRef.current.setMapState({
-        pos,
-        w: current.w,
-        h: current.h,
-        tiles: current.tiles,
-        floors: snap.floors,
-        zMin: snap.zMin,
-        zMax: snap.zMax,
-        range: mapStore.range,
-        ts: Date.now(),
-      })
+    const onMapMove = () => {
+      const ms = getMapStore()
+      if (!ms?.center || !mapViewRef.current) return
+      mapViewRef.current.setMapState(ms.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
     const onKeyDown = (e) => {
       const opcode = WASD_TO_MOVE[e.code]
-      if (opcode != null) {
-        e.preventDefault()
-        console.log('[WASD]', e.code, '-> sendMove', opcode)
-        sendMove(opcode)
+      if (opcode == null) return
+      if (!localPlayer.canWalk(mapStore)) return
+      e.preventDefault()
+      if (isFeatureEnabled('GameAllowPreWalk')) {
+        const dir = OPCODE_TO_DIRECTION[opcode]
+        if (dir != null) localPlayer.preWalk(dir)
       }
+      sendMove(opcode)
     }
 
     window.addEventListener('ot:map', onMap)

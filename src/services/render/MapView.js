@@ -132,21 +132,7 @@ export class MapView {
           console.log('[MapView] centro mudou ->', pos.x, pos.y, pos.z)
         }
         this._lastMapStoreCenter = { x: pos.x, y: pos.y, z: pos.z }
-        const zMin = Math.max(0, pos.z - 2)
-        const zMax = Math.min(15, pos.z + 2)
-        const snap = mapStore.snapshotFloors(zMin, zMax)
-        const current = snap.floors?.[pos.z] ?? mapStore.snapshotFloor(pos.z)
-        this.setMapState({
-          pos,
-          w: current.w,
-          h: current.h,
-          tiles: current.tiles,
-          floors: snap.floors,
-          zMin: snap.zMin,
-          zMax: snap.zMax,
-          range: mapStore.range,
-          ts: Date.now(),
-        })
+        this.setMapState(mapStore.getMapStateForView())
       }
     }
     if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()

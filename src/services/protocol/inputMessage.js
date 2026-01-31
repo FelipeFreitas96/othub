@@ -67,17 +67,25 @@ export class InputMessage {
     /**
      * Read a string
      * Format: 16-bit length + string bytes
+     * Clamps length to remaining buffer to avoid overflow (e.g. stream misalignment).
      * @returns {string}
      */
     getString() {
         const length = this.getU16()
-        if (!this.canRead(length)) {
-            throw new Error('InputMessage: Cannot read string, buffer overflow')
+        const available = this.buffer.length - this.position
+        const toRead = length > available ? Math.max(0, available) : length
+        if (toRead < length && available < length) {
+            if (typeof console !== 'undefined' && console.warn) {
+                console.warn(`InputMessage: getString length ${length} > available ${available}, clamping`)
+            }
         }
-
         let str = ''
-        for (let i = 0; i < length; i++) {
+        for (let i = 0; i < toRead; i++) {
             str += String.fromCharCode(this.buffer[this.position++])
+        }
+        if (toRead < length) {
+            const skip = Math.min(length - toRead, this.buffer.length - this.position)
+            this.position += skip
         }
         return str
     }

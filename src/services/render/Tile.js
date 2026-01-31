@@ -159,9 +159,10 @@ export class Tile {
 
     for (const thing of this.m_things) {
       if (!thing.isCreature?.()) continue
-      if (thing.isWalking?.()) continue
-      if (pipeline.mapStoreRef?.current?.walkStates?.has(thing.m_entry?.creatureId)) continue
-      this._drawThing(thing, pipeline, state.drawElevationPx, steps, state)
+      const creatureId = thing.m_entry?.creatureId ?? thing.m_entry?.id
+      const creatureToDraw = pipeline.mapStoreRef?.current?.getCreatureById?.(creatureId) ?? thing
+      if (creatureToDraw.isWalking?.()) continue
+      this._drawThing(creatureToDraw, pipeline, state.drawElevationPx, steps, state)
     }
   }
 

@@ -10,10 +10,12 @@ import { OutputMessage } from './outputMessage'
 import { InputMessage } from './inputMessage'
 import { getAuthenticatorToken, getLoginContext, getSessionKey } from './sessionState'
 import { DEFAULT_PLAYER } from '../../game/defaultPlayer'
+import { localPlayer } from '../game/LocalPlayer.js'
 import { getThings, loadThings } from '../things/things.js'
-import { MapStore } from './mapStore.js'
+import { getMapStore } from './mapStore.js'
 import { isFeatureEnabled, setClientVersion } from './features'
 import { getGameClientVersion, setGameClientVersion } from '../../game/g_game.js'
+import { Creature } from '../things/Creature.js'
 
 function getOutfit(msg) {
   const lookType = isFeatureEnabled('GameLooktypeU16') ? msg.getU16() : msg.getU8()
@@ -33,8 +35,9 @@ function getCreature(msg, type, map) {
     const creatureId = msg.getU32()
     const direction = msg.getU8()
     const c = map.getCreature(creatureId)
-    if (c) c.direction = direction
-    return c ? { kind: 'creature', creatureId, id: c.outfit?.lookType || 0, outfit: c.outfit, direction: c.direction, name: c.name } : { kind: 'creature', creatureId, id: 0, outfit: null, direction, name: '' }
+    const entry = c?.m_entry ?? c
+    if (entry) entry.direction = direction
+    return c ? { kind: 'creature', creatureId, id: (entry?.outfit?.lookType ?? c?.outfit?.lookType) || 0, outfit: entry?.outfit ?? c?.outfit, direction: entry?.direction ?? direction, name: entry?.name ?? c?.name ?? '' } : { kind: 'creature', creatureId, id: 0, outfit: null, direction, name: '' }
   }
 
   let creatureId = 0
@@ -70,7 +73,7 @@ function getPosition(msg) {
   return { x: msg.getU16(), y: msg.getU16(), z: msg.getU8() }
 }
 
-/** OTC: getMappedThing(msg) – pos+stackpos ou 0xffff+creatureId; retorna { creatureId, fromPos } ou null. */
+/** OTC: getMappedThing(msg) – pos+stackpos ou 0xffff+creatureId; retorna { creatureId?, fromPos, stackPos } ou null. */
 function getMappedThing(msg, map) {
   const x = msg.getU16()
   if (x !== 0xffff) {
@@ -78,22 +81,157 @@ function getMappedThing(msg, map) {
     const stackpos = msg.getU8()
     const tile = map.getTile(fromPos)
     const thing = tile?.things?.[stackpos]
-    if (thing?.kind === 'creature') {
-      return { creatureId: thing.creatureId ?? thing.id, fromPos }
+    if (!thing) return null
+    return {
+      creatureId: thing.kind === 'creature' ? (thing.creatureId ?? thing.id) : undefined,
+      fromPos,
+      stackPos: stackpos,
     }
-    return null
   }
   const creatureId = msg.getU32()
   const found = map.findCreaturePosition(creatureId)
-  if (found) return { creatureId, fromPos: found.pos }
+  if (found) return { creatureId, fromPos: found.pos, stackPos: found.stackPos }
   return null
+}
+
+/** OTC: getThing(msg) – lê um único thing (item ou creature) do message. */
+function getThing(msg, map) {
+  const things = getThings()
+  const id = msg.getU16()
+  if (id === 97 || id === 98 || id === 99) {
+    const c = getCreature(msg, id, map)
+    return c || { kind: 'creature', creatureId: 0, id: 0, outfit: null, direction: 0, name: '' }
+  }
+  const tt = things.types?.getItem(id)
+  let subtype = null
+  if (tt && (tt.stackable || tt.fluid || tt.splash || tt.chargeable)) {
+    subtype = isFeatureEnabled('GameCountU16') ? msg.getU16() : msg.getU8()
+  }
+  return { kind: 'item', id, subtype }
 }
 
 function parseCreatureMove(msg, map) {
   const ref = getMappedThing(msg, map)
   const newPos = getPosition(msg)
-  if (!ref) return
-  map.startWalk(ref.creatureId, ref.fromPos, newPos, map.getCreature(ref.creatureId), false)
+  if (!ref || ref.creatureId == null || ref.stackPos == null) return
+  map.removeThingByPos(ref.fromPos, ref.stackPos)
+  const creature = map.getCreatureById(ref.creatureId)
+  if (!creature) return
+  const entry = creature.m_entry || {}
+  const dir = Creature.getDirectionFromPosition(ref.fromPos, newPos)
+  const thing = {
+    kind: 'creature',
+    creatureId: ref.creatureId,
+    id: entry.outfit?.lookType ?? entry.lookType ?? 0,
+    outfit: entry.outfit ?? null,
+    direction: dir,
+    name: entry.name ?? '',
+  }
+  map.addThing(thing, newPos)
+  creature.walk(ref.fromPos, newPos)
+}
+
+/** OTC: setTileDescription para um único tile (parseUpdateTile 0x69). */
+function setTileDescriptionAt(msg, map, tilePos) {
+  const things = getThings()
+  const peekU16 = () => msg.buffer[msg.position] | (msg.buffer[msg.position + 1] << 8)
+  const readThing = () => {
+    const id = msg.getU16()
+    if (id === 97 || id === 98 || id === 99) {
+      const c = getCreature(msg, id, map)
+      return c || { kind: 'creature', creatureId: 0, id: 0, outfit: null, direction: 0, name: '' }
+    }
+    const tt = things.types?.getItem(id)
+    let subtype = null
+    if (tt && (tt.stackable || tt.fluid || tt.splash || tt.chargeable)) {
+      subtype = isFeatureEnabled('GameCountU16') ? msg.getU16() : msg.getU8()
+    }
+    return { kind: 'item', id, subtype }
+  }
+  map.cleanTile(tilePos)
+  const tile = { pos: { ...tilePos }, things: [] }
+  let gotEffect = false
+  for (let stackPos = 0; stackPos < 256; stackPos++) {
+    if (!msg.canRead(2)) break
+    const marker = peekU16()
+    if (marker >= 0xff00) {
+      msg.getU16()
+      map.setTile(tilePos, tile)
+      return
+    }
+    if (isFeatureEnabled('GameEnvironmentEffect') && !gotEffect) {
+      msg.getU16()
+      gotEffect = true
+      continue
+    }
+    const thing = readThing()
+    tile.things.push(thing)
+  }
+  map.setTile(tilePos, tile)
+}
+
+/** OTC: parseUpdateTile – atualiza um único tile (0x69). */
+function parseUpdateTile(msg, map) {
+  const tilePos = getPosition(msg)
+  setTileDescriptionAt(msg, map, tilePos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:map'))
+  }
+}
+
+/** OTC: parseTileTransformThing – substitui thing no mapa (0x6B ChangeOnMap). */
+function parseTileTransformThing(msg, map) {
+  const ref = getMappedThing(msg, map)
+  const newThing = getThing(msg, map)
+  if (!ref || ref.stackPos == null) return
+  const pos = ref.fromPos
+  const stackPos = ref.stackPos
+  map.removeThingByPos(pos, stackPos)
+  if (newThing.kind === 'creature' && (newThing.creatureId != null || newThing.id != null)) {
+    map.upsertCreature({ id: newThing.creatureId ?? newThing.id, name: newThing.name, direction: newThing.direction, outfit: newThing.outfit })
+  }
+  map.addThing(newThing, pos, stackPos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:map'))
+  }
+}
+
+/** OTC: parseTileAddThing – adiciona thing no mapa (0x6A CreateOnMap). Posição + um thing. */
+function parseTileAddThing(msg, map) {
+  const pos = getPosition(msg)
+  const thing = getThing(msg, map)
+  if (thing.kind === 'creature' && (thing.creatureId != null || thing.id != null)) {
+    map.upsertCreature({ id: thing.creatureId ?? thing.id, name: thing.name, direction: thing.direction, outfit: thing.outfit })
+  }
+  map.addThing(thing, pos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:map'))
+  }
+}
+
+/** OTC: parseTileRemoveThing – remove thing do mapa (0x6C DeleteOnMap). Ref (pos+stackpos ou creatureId). */
+function parseTileRemoveThing(msg, map) {
+  const ref = getMappedThing(msg, map)
+  if (!ref || ref.stackPos == null) return
+  map.removeThingByPos(ref.fromPos, ref.stackPos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:map'))
+  }
+}
+
+/** OTC: parseCancelWalk – servidor rejeitou o passo (ex.: tile bloqueado/parede). Payload: 1 byte = direção tentada. */
+function parseCancelWalk(msg) {
+  const direction = msg.canRead(1) ? msg.getU8() : -1
+  localPlayer.cancelWalk(direction)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:map'))
+  }
+}
+
+/** OTC: parseWalkWait – servidor pede esperar N ms antes de aceitar novo passo. Payload: U16 millis. */
+function parseWalkWait(msg) {
+  const millis = msg.canRead(2) ? msg.getU16() : 0
+  localPlayer.lockWalk(millis)
 }
 
 function parseMapDescription(msg, map, debugProtocol) {
@@ -127,7 +265,9 @@ function parseMapDescription(msg, map, debugProtocol) {
     const tile = { pos: tilePos, things: [] }
     let gotEffect = false
     for (let stackPos = 0; stackPos < 256; stackPos++) {
-      if (peekU16() >= 0xff00) {
+      if (!msg.canRead(2)) break
+      const marker = peekU16()
+      if (marker >= 0xff00) {
         const skip = msg.getU16() & 0xff
         map.setTile(tilePos, tile)
         return skip
@@ -200,37 +340,16 @@ function parseMapDescription(msg, map, debugProtocol) {
     const dy = Math.abs(pos.y - oldCenter.y)
     const dz = Math.abs(pos.z - oldCenter.z)
     if (dx <= 1 && dy <= 1 && dz === 0 && (dx !== 0 || dy !== 0)) {
-      const playerId = typeof window !== 'undefined' ? window.__otPlayerId : null
+      const playerId = localPlayer.getId()
       if (playerId != null) {
-        const tileAtNew = map.getTile(pos)
-        const playerThing = tileAtNew?.things?.find((t) => t.kind === 'creature' && (t.creatureId === playerId || t.id === playerId))
-        const playerData = playerThing || map.getCreature(playerId) || {}
-        map.startWalk(playerId, oldCenter, pos, playerData, true)
+        localPlayer.walk(oldCenter, pos, map)
       }
     }
   }
-  // Estender snapshot para incluir andares abaixo (render) sem alterar o parse do protocolo.
-  const snapZMax = Math.max(zMax, Math.min(15, pos.z + 2))
-  const snap = map.snapshotFloors(zMin, snapZMax)
-  const current = snap.floors?.[pos.z] || map.snapshotFloor(pos.z)
-  const state = {
-    pos,
-    w: current.w,
-    h: current.h,
-    tiles: current.tiles,
-    floors: snap.floors,
-    zMin: snap.zMin,
-    zMax: snap.zMax,
-    range: map.range,
-    ts: Date.now(),
-    version: clientVersion
-  }
   if (typeof window !== 'undefined') {
-    window.__otMapState = state
-    window.dispatchEvent(new CustomEvent('ot:map', { detail: state }))
-    // Servidores que respondem com 0x64 em vez de 101–104: disparar ot:mapMove para a view atualizar igual.
+    window.dispatchEvent(new CustomEvent('ot:map'))
     if (oldCenter && (oldCenter.x !== pos.x || oldCenter.y !== pos.y || oldCenter.z !== pos.z)) {
-      window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos } }))
+      window.dispatchEvent(new CustomEvent('ot:mapMove'))
     }
   }
 }
@@ -257,7 +376,9 @@ function parseMapSlice(msg, map, baseX, baseY, z, width, height) {
     const tile = { pos: tilePos, things: [] }
     let gotEffect = false
     for (let stackPos = 0; stackPos < 256; stackPos++) {
-      if (peekU16() >= 0xff00) {
+      if (!msg.canRead(2)) break
+      const marker = peekU16()
+      if (marker >= 0xff00) {
         const skip = msg.getU16() & 0xff
         map.setTile(tilePos, tile)
         return skip
@@ -304,12 +425,16 @@ function parseMapSlice(msg, map, baseX, baseY, z, width, height) {
 
 /** OTC: parseMapMoveNorth – protocolgameparse.cpp 1:1. Sem early return; GameMapMovePosition opcional; setMapDescription sempre. */
 function parseMapMoveNorth(msg, map, debugProtocol) {
+  const oldCenter = { ...map.center }
   const pos = isFeatureEnabled('GameMapMovePosition') ? getPosition(msg) : { ...map.center }
   pos.y--
   const range = map.range
   const { w } = map.getAwareDims()
   parseMapSlice(msg, map, pos.x - range.left, pos.y - range.top, pos.z, w, 1)
   map.setCenter(pos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
+  }
   if (typeof window !== 'undefined' && (window.__otDebugProtocol || debugProtocol)) {
     console.log('[protocol] 0x65 map move north ->', pos)
   }
@@ -317,12 +442,16 @@ function parseMapMoveNorth(msg, map, debugProtocol) {
 
 /** OTC: parseMapMoveEast – protocolgameparse.cpp 1:1. */
 function parseMapMoveEast(msg, map, debugProtocol) {
+  const oldCenter = { ...map.center }
   const pos = isFeatureEnabled('GameMapMovePosition') ? getPosition(msg) : { ...map.center }
   pos.x++
   const range = map.range
   const { h } = map.getAwareDims()
   parseMapSlice(msg, map, pos.x + range.right, pos.y - range.top, pos.z, 1, h)
   map.setCenter(pos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
+  }
   if (typeof window !== 'undefined' && (window.__otDebugProtocol || debugProtocol)) {
     console.log('[protocol] 0x66 map move east ->', pos)
   }
@@ -330,12 +459,16 @@ function parseMapMoveEast(msg, map, debugProtocol) {
 
 /** OTC: parseMapMoveSouth – protocolgameparse.cpp 1:1 (baseY = pos.y + range.bottom). */
 function parseMapMoveSouth(msg, map, debugProtocol) {
+  const oldCenter = { ...map.center }
   const pos = isFeatureEnabled('GameMapMovePosition') ? getPosition(msg) : { ...map.center }
   pos.y++
   const range = map.range
   const { w } = map.getAwareDims()
   parseMapSlice(msg, map, pos.x - range.left, pos.y + range.bottom, pos.z, w, 1)
   map.setCenter(pos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
+  }
   if (typeof window !== 'undefined' && (window.__otDebugProtocol || debugProtocol)) {
     console.log('[protocol] 0x67 map move south ->', pos)
   }
@@ -343,12 +476,16 @@ function parseMapMoveSouth(msg, map, debugProtocol) {
 
 /** OTC: parseMapMoveWest – protocolgameparse.cpp 1:1. */
 function parseMapMoveWest(msg, map, debugProtocol) {
+  const oldCenter = { ...map.center }
   const pos = isFeatureEnabled('GameMapMovePosition') ? getPosition(msg) : { ...map.center }
   pos.x--
   const range = map.range
   const { h } = map.getAwareDims()
   parseMapSlice(msg, map, pos.x - range.left, pos.y - range.top, pos.z, 1, h)
   map.setCenter(pos)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
+  }
   if (typeof window !== 'undefined' && (window.__otDebugProtocol || debugProtocol)) {
     console.log('[protocol] 0x68 map move west ->', pos)
   }
@@ -377,6 +514,8 @@ const GAME_SERVER_OPCODES = {
   GameServerChangeOnMap: 107,
   GameServerDeleteOnMap: 108,
   GameServerMoveCreature: 109,
+  GameServerCancelWalk: 181,   // 0xB5 – servidor rejeitou o passo (ex.: andar em parede)
+  GameServerWalkWait: 182,      // 0xB6 – servidor pede esperar N ms antes de andar
 }
 
 /** OTC: Proto::GameServerFirstGameOpcode – opcodes > este valor indicam pacotes in-game (mapa, etc.). */
@@ -431,6 +570,30 @@ async function parseMessage(msg, ctx) {
           parseCreatureMove(msg, map, debug)
           break
 
+        case GAME_SERVER_OPCODES.GameServerCancelWalk:
+          parseCancelWalk(msg)
+          break
+
+        case GAME_SERVER_OPCODES.GameServerWalkWait:
+          parseWalkWait(msg)
+          break
+
+        case GAME_SERVER_OPCODES.GameServerUpdateTile:
+          parseUpdateTile(msg, map)
+          break
+
+        case GAME_SERVER_OPCODES.GameServerCreateOnMap:
+          parseTileAddThing(msg, map)
+          break
+
+        case GAME_SERVER_OPCODES.GameServerChangeOnMap:
+          parseTileTransformThing(msg, map)
+          break
+
+        case GAME_SERVER_OPCODES.GameServerDeleteOnMap:
+          parseTileRemoveThing(msg, map)
+          break
+
         case GAME_SERVER_OPCODES.GameServerChallenge:
           const timestamp = msg.getU32()
           const random = msg.getU8()
@@ -475,7 +638,7 @@ async function parseMessage(msg, ctx) {
         case GAME_SERVER_OPCODES.GameServerLoginOrPendingState:
           if (msg.canRead(7)) {
             const playerId = msg.getU32()
-            if (typeof window !== 'undefined') window.__otPlayerId = playerId
+            localPlayer.setId(playerId)
             msg.getU16()
             msg.getU8()
           }
@@ -485,7 +648,7 @@ async function parseMessage(msg, ctx) {
         case GAME_SERVER_OPCODES.GameServerLoginSuccess:
           if (msg.canRead(7)) {
             const playerId = msg.getU32()
-            if (typeof window !== 'undefined') window.__otPlayerId = playerId
+            localPlayer.setId(playerId)
             msg.getU16()
             msg.getU8()
           }
@@ -495,7 +658,7 @@ async function parseMessage(msg, ctx) {
         case GAME_SERVER_OPCODES.GameServerEnterGame:
           if (msg.canRead(7)) {
             const playerId = msg.getU32()
-            if (typeof window !== 'undefined') window.__otPlayerId = playerId
+            localPlayer.setId(playerId)
             msg.getU16()
             msg.getU8()
           }
@@ -504,6 +667,14 @@ async function parseMessage(msg, ctx) {
             ok: true,
             player: { ...DEFAULT_PLAYER, name: ctx.characterName },
           })
+          break
+
+        case 0x92: // 146 – shop/NPC (skip rest of message; not yet implemented)
+        case 0xaa: // 170 – NPC trade / open (skip rest of message; not yet implemented)
+          msg.position = msg.buffer.length
+          break
+
+        case 0xff: // 255 – sentinel / no-op (0 bytes payload)
           break
 
         default: {
@@ -549,6 +720,18 @@ export const GAME_CLIENT_OPCODES = {
   GameClientWalkSoutheast: 0x6B,
   GameClientWalkSouthwest: 0x6C,
   GameClientWalkNorthwest: 0x6D,
+}
+
+/** OTC Otc::Direction – mapeamento opcode walk → direção (North=0, East=1, South=2, West=3, NE=4, NW=5, SE=6, SW=7). */
+export const OPCODE_TO_DIRECTION = {
+  [GAME_CLIENT_OPCODES.GameClientWalkNorth]: 0,
+  [GAME_CLIENT_OPCODES.GameClientWalkEast]: 1,
+  [GAME_CLIENT_OPCODES.GameClientWalkSouth]: 2,
+  [GAME_CLIENT_OPCODES.GameClientWalkWest]: 3,
+  [GAME_CLIENT_OPCODES.GameClientWalkNortheast]: 4,
+  [GAME_CLIENT_OPCODES.GameClientWalkNorthwest]: 5,
+  [GAME_CLIENT_OPCODES.GameClientWalkSoutheast]: 6,
+  [GAME_CLIENT_OPCODES.GameClientWalkSouthwest]: 7,
 }
 
 /**
@@ -665,7 +848,8 @@ export async function loginWorld(charInfo) {
   setGameClientVersion(effectiveVersion)
   loadThings(protocolInfo.clientVersion || 860).catch(() => { })
   const connection = new Connection()
-  const map = new MapStore()
+  const map = getMapStore()
+  map.clean()
   if (typeof window !== 'undefined') {
     window.__otMapStore = map
     if (new URLSearchParams(window.location.search).get('debug') === 'protocol') window.__otDebugProtocol = true

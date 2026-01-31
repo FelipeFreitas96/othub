@@ -1,125 +1,227 @@
+/**
+ * Map – port do OTClient src/client/map.h + map.cpp
+ * Copyright (c) 2010-2020 OTClient; portado para JS neste projeto.
+ * Apenas funções que existem em map.cpp.
+ * Walk: delegado à Creature (OTC: estado de walk fica na Creature).
+ * View state: construído via getTile (OTC: MapView usa map.getTile).
+ */
 import { Creature } from '../things/Creature.js'
+import { localPlayer } from '../game/LocalPlayer.js'
+
+const SEA_FLOOR = 7
+const MAX_Z = 15
+const AWARE_UNDEGROUND_FLOOR_RANGE = 2
+const TILE_PIXELS = 32
 
 export class MapStore {
   constructor() {
-    this.center = { x: 0, y: 0, z: 7 }
-    this.tiles = new Map() // key "x,y,z" -> { pos, things:[{kind,id,subtype}] }
-    this.creatures = new Map() // creatureId -> creature data
-    /** OTC: walk state por creatureId (Creature::m_walking, m_walkOffset, m_walkAnimationPhase). */
-    this.walkStates = new Map() // creatureId -> { fromPos, toPos, startTime, stepDuration, direction, entry, ... }
+    this.m_centralPosition = { x: 0, y: 0, z: SEA_FLOOR }
+    this.m_tiles = new Map()
+    this.m_knownCreatures = new Map()
+    this.m_awareRange = { left: 8, right: 9, top: 6, bottom: 7 }
     this.w = 18
     this.h = 14
-    this.range = { left: 8, right: 9, top: 6, bottom: 7 } // OTC default
   }
 
-  key(x, y, z) { return `${x},${y},${z}` }
-  setCenter(pos) { this.center = { ...pos } }
-  cleanTile(pos) { this.tiles.delete(this.key(pos.x, pos.y, pos.z)) }
-  setTile(pos, tile) { this.tiles.set(this.key(pos.x, pos.y, pos.z), tile) }
-  getTile(pos) { return this.tiles.get(this.key(pos.x, pos.y, pos.z)) || null }
-  upsertCreature(creature) { if (creature?.id) this.creatures.set(creature.id, creature) }
-  getCreature(id) { return this.creatures.get(id) || null }
+  /** OTC: dimensões da área aware (para parse 0x64). */
+  getAwareDims() {
+    const r = this.m_awareRange
+    return { w: r.left + r.right + 1, h: r.top + r.bottom + 1 }
+  }
 
-  /** OTC: acha posição atual da criatura no mapa (para getMappedThing por creatureId). */
+  _key(x, y, z) {
+    return `${x},${y},${z}`
+  }
+
+  getCentralPosition() {
+    return { ...this.m_centralPosition }
+  }
+
+  setCentralPosition(pos) {
+    if (pos.x === this.m_centralPosition.x && pos.y === this.m_centralPosition.y && pos.z === this.m_centralPosition.z) return
+    this.m_centralPosition = { ...pos }
+    if (this.removeUnawareThings) this.removeUnawareThings()
+  }
+
+  getAwareRange() {
+    return { ...this.m_awareRange }
+  }
+
+  setAwareRange(range) {
+    this.m_awareRange = { ...range }
+    if (this.removeUnawareThings) this.removeUnawareThings()
+  }
+
+  resetAwareRange() {
+    this.m_awareRange = { left: 8, right: 9, top: 6, bottom: 7 }
+    if (this.removeUnawareThings) this.removeUnawareThings()
+  }
+
+  getFirstAwareFloor() {
+    if (this.m_centralPosition.z > SEA_FLOOR) return Math.max(0, this.m_centralPosition.z - AWARE_UNDEGROUND_FLOOR_RANGE)
+    return 0
+  }
+
+  getLastAwareFloor() {
+    if (this.m_centralPosition.z > SEA_FLOOR) return Math.min(this.m_centralPosition.z + AWARE_UNDEGROUND_FLOOR_RANGE, MAX_Z)
+    return SEA_FLOOR
+  }
+
+  isAwareOfPosition(pos) {
+    if (pos.z < this.getFirstAwareFloor() || pos.z > this.getLastAwareFloor()) return false
+    const c = this.m_centralPosition
+    const r = this.m_awareRange
+    const dx = Math.abs(pos.x - c.x)
+    const dy = Math.abs(pos.y - c.y)
+    return dx <= r.left && dx <= r.right && dy <= r.top && dy <= r.bottom
+  }
+
+  getTile(pos) {
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null
+    return this.m_tiles.get(this._key(pos.x, pos.y, pos.z)) || null
+  }
+
+  getOrCreateTile(pos) {
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null
+    const k = this._key(pos.x, pos.y, pos.z)
+    let tile = this.m_tiles.get(k)
+    if (!tile) {
+      tile = { pos: { ...pos }, things: [] }
+      this.m_tiles.set(k, tile)
+    }
+    return tile
+  }
+
+  getTiles(floor = -1) {
+    const out = []
+    if (floor > MAX_Z) return out
+    if (floor < 0) {
+      for (let z = 0; z <= MAX_Z; z++) {
+        for (const tile of this.m_tiles.values()) {
+          if (tile?.pos?.z === z) out.push(tile)
+        }
+      }
+    } else {
+      for (const tile of this.m_tiles.values()) {
+        if (tile?.pos?.z === floor) out.push(tile)
+      }
+    }
+    return out
+  }
+
+  cleanTile(pos) {
+    if (!pos) return
+    this.m_tiles.delete(this._key(pos.x, pos.y, pos.z))
+  }
+
+  addThing(thing, pos, stackPos = -1) {
+    if (!thing) return
+    const tile = this.getOrCreateTile(pos)
+    if (!tile) return
+    if (stackPos < 0 || stackPos >= tile.things.length) tile.things.push(thing)
+    else tile.things.splice(stackPos, 0, thing)
+  }
+
+  getThing(pos, stackPos) {
+    const tile = this.getTile(pos)
+    if (!tile || stackPos < 0 || stackPos >= (tile.things?.length ?? 0)) return null
+    return tile.things[stackPos] ?? null
+  }
+
+  removeThingByPos(pos, stackPos) {
+    const tile = this.getTile(pos)
+    if (!tile || stackPos < 0 || stackPos >= (tile.things?.length ?? 0)) return false
+    tile.things.splice(stackPos, 1)
+    if (tile.things.length === 0) this.cleanTile(pos)
+    return true
+  }
+
+  /** Armazena Creature (OTC: criaturas conhecidas). Aceita Creature ou plain entry. */
+  addCreature(creatureOrEntry) {
+    if (!creatureOrEntry) return
+    if (creatureOrEntry instanceof Creature) {
+      const id = creatureOrEntry.getId?.() ?? creatureOrEntry.m_entry?.creatureId ?? creatureOrEntry.m_entry?.id
+      if (id != null) this.m_knownCreatures.set(id, creatureOrEntry)
+      return
+    }
+    const id = creatureOrEntry.creatureId ?? creatureOrEntry.id
+    if (id == null) return
+    let c = this.m_knownCreatures.get(id)
+    if (!c) c = new Creature(creatureOrEntry)
+    else c.m_entry = { ...c.m_entry, ...creatureOrEntry }
+    this.m_knownCreatures.set(id, c)
+  }
+
+  getCreatureById(id) {
+    return this.m_knownCreatures.get(id) ?? null
+  }
+
+  /** Encontra a posição de uma criatura nos tiles (para getMappedThing 0xffff). */
   findCreaturePosition(creatureId) {
-    for (const tile of this.tiles.values()) {
-      const idx = tile.things?.findIndex(
-        (t) => t.kind === 'creature' && (t.creatureId === creatureId || t.id === creatureId)
-      )
-      if (idx >= 0) return { pos: tile.pos }
+    for (const tile of this.m_tiles.values()) {
+      if (!tile?.pos || !tile.things?.length) continue
+      for (let i = 0; i < tile.things.length; i++) {
+        const t = tile.things[i]
+        if (t.kind === 'creature' && (Number(t.creatureId) === Number(creatureId) || t.creatureId === creatureId)) {
+          return { pos: { ...tile.pos }, stackPos: i }
+        }
+      }
     }
     return null
   }
 
   /**
-   * OTC Creature::walk(oldPos, newPos) – inicia walk; remove criatura do tile antigo, coloca no novo, registra estado.
-   * @param {boolean} skipTileUpdate - se true, só registra walk state (mapa já foi atualizado pelo protocolo, ex.: 0x64).
-   */
-  startWalk(creatureId, fromPos, toPos, entry, skipTileUpdate = false) {
-    const c = this.getCreature(creatureId) || entry
-    const data = { ...(c && typeof c === 'object' ? c : {}), ...(entry && typeof entry === 'object' ? entry : {}) }
-    const direction = Creature.getDirectionFromPosition(fromPos, toPos)
-    const stepDuration = Creature.getStepDuration(data, fromPos, toPos)
-    this.walkStates.set(creatureId, {
-      creatureId,
-      fromPos: { ...fromPos },
-      toPos: { ...toPos },
-      startTime: typeof performance !== 'undefined' ? performance.now() : Date.now(),
-      stepDuration,
-      direction,
-      entry: data,
-      walking: true,
-      walkedPixels: 0,
-      walkAnimationPhase: 0,
-      footStep: 0,
-      lastFootTime: 0,
-    })
-    if (skipTileUpdate) return
-    const tileFrom = this.getTile(fromPos)
-    if (tileFrom?.things?.length) {
-      const thingsFrom = tileFrom.things.filter((t) => !(t.kind === 'creature' && (t.creatureId === creatureId || t.id === creatureId)))
-      this.setTile(fromPos, { pos: fromPos, things: thingsFrom })
-    } else {
-      this.cleanTile(fromPos)
-    }
-    const tileAtTo = this.getTile(toPos)
-    const existing = tileAtTo?.things ? [...tileAtTo.things] : []
-    existing.push({ kind: 'creature', creatureId, id: data.outfit?.lookType || 0, outfit: data.outfit || null, direction, name: data.name || '' })
-    this.setTile(toPos, { pos: toPos, things: existing })
-  }
-
-  /**
-   * Atualiza todos os walk states (chamar a cada frame). OTC: nextWalkUpdate → updateWalk.
+   * OTC: atualiza walk de todas as criaturas; chama localPlayer.terminateWalk() quando o local player termina.
    */
   updateWalk(now, thingsRef) {
     const types = thingsRef?.current?.types
-    for (const [creatureId, state] of this.walkStates) {
-      if (!state.walking) continue
-      const entry = state.entry || {}
-      const lookType = entry.outfit?.lookType ?? entry.lookType ?? 0
-      const tt = types?.getCreature?.(lookType)
-      const phases = tt?.getAnimationPhases?.() ?? tt?.phases ?? 1
-      Creature.updateWalkState(state, now, phases)
-      if (!state.walking) this.walkStates.delete(creatureId)
+    for (const creature of this.m_knownCreatures.values()) {
+      if (!creature.updateWalk) continue
+      const terminated = creature.updateWalk(now, types)
+      if (terminated && localPlayer.getId() != null && Number(creature.getId?.()) === Number(localPlayer.getId())) {
+        localPlayer.terminateWalk()
+      }
     }
   }
 
   /**
-   * Retorna criaturas em walk que estão visualmente no tile (wx, wy, z). OTC: m_walkingTile.
+   * OTC MapView: criaturas em walk que estão visualmente neste tile (para desenhar com offset).
    */
   getWalkingCreaturesForWorldTile(wx, wy, z) {
-    const TILE_PIXELS = 32
     const out = []
-    for (const state of this.walkStates.values()) {
-      if (!state.walking || state.fromPos.z !== z) continue
-      const from = state.fromPos
-      const to = state.toPos
-      const t = state.walkedPixels / TILE_PIXELS
+    for (const creature of this.m_knownCreatures.values()) {
+      if (!creature.isWalking?.() || !creature.m_fromPos || creature.m_fromPos.z !== z) continue
+      const from = creature.m_fromPos
+      const to = creature.m_toPos
+      if (!to) continue
+      const t = (creature.m_walkedPixels ?? 0) / TILE_PIXELS
       const curX = from.x + (to.x - from.x) * t
       const curY = from.y + (to.y - from.y) * t
       const tileX = Math.floor(curX)
       const tileY = Math.floor(curY)
       if (tileX !== wx || tileY !== wy) continue
+      const off = creature.getWalkOffset?.() ?? { x: 0, y: 0 }
       out.push({
-        entry: { ...state.entry, direction: state.direction, walking: true, walkAnimationPhase: state.walkAnimationPhase ?? 0 },
-        offsetX: state.walkOffsetX ?? 0,
-        offsetY: state.walkOffsetY ?? 0,
+        entry: { ...(creature.m_entry || {}), direction: creature.m_direction, walking: true, walkAnimationPhase: creature.m_walkAnimationPhase ?? 0 },
+        offsetX: off.x,
+        offsetY: off.y,
       })
     }
     return out
   }
 
-  getAwareDims() { return { w: this.range.left + this.range.right + 1, h: this.range.top + this.range.bottom + 1 } }
-
-  snapshotFloor(z = this.center.z) {
+  /**
+   * Constrói o grid de um andar a partir de getTile (OTC: MapView usa map.getTile; sem snapshot separado).
+   */
+  snapshotFloor(z) {
+    const center = this.getCentralPosition()
+    const r = this.getAwareRange()
     const { w, h } = this.getAwareDims()
     const out = Array.from({ length: h }, () => Array.from({ length: w }, () => ({ groundId: 0, stack: [], wx: 0, wy: 0, z })))
-    const ox = this.center.x - this.range.left
-    const oy = this.center.y - this.range.top
-    const dz = z - (this.center?.z ?? 0)
+    const ox = center.x - r.left
+    const oy = center.y - r.top
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      // OTClient-style: floors are projected with (dz, dz) translation.
-      const pos = { x: ox + x + dz, y: oy + y + dz, z }
+      const pos = { x: ox + x, y: oy + y, z }
       const tile = this.getTile(pos)
       out[y][x].wx = pos.x
       out[y][x].wy = pos.y
@@ -140,10 +242,93 @@ export class MapStore {
   }
 
   snapshotFloors(zMin, zMax) {
-    const min = Math.min(zMin ?? this.center.z, zMax ?? this.center.z)
-    const max = Math.max(zMin ?? this.center.z, zMax ?? this.center.z)
+    const center = this.getCentralPosition()
+    const min = Math.min(zMin ?? center.z, zMax ?? center.z)
+    const max = Math.max(zMin ?? center.z, zMax ?? center.z)
     const floors = {}
     for (let z = min; z <= max; z++) floors[z] = this.snapshotFloor(z)
     return { zMin: min, zMax: max, floors }
   }
+
+  removeCreatureById(id) {
+    if (id == null) return
+    this.m_knownCreatures.delete(id)
+  }
+
+  clean() {
+    this.cleanDynamicThings()
+    this.m_tiles.clear()
+  }
+
+  cleanDynamicThings() {
+    for (const tile of this.m_tiles.values()) {
+      if (tile?.things?.length) {
+        tile.things = tile.things.filter((t) => t.kind !== 'creature')
+        if (tile.things.length === 0) this.cleanTile(tile.pos)
+      }
+    }
+    this.m_knownCreatures.clear()
+  }
+
+  removeUnawareThings() {
+    for (const tile of this.m_tiles.values()) {
+      if (!tile?.pos || this.isAwareOfPosition(tile.pos)) continue
+      for (let i = tile.things.length - 1; i >= 0; i--) {
+        const t = tile.things[i]
+        if (t.kind === 'creature' && (t.creatureId != null || t.id != null)) {
+          this.m_knownCreatures.delete(t.creatureId ?? t.id)
+          tile.things.splice(i, 1)
+        }
+      }
+      if (tile.things.length === 0) this.cleanTile(tile.pos)
+    }
+  }
+
+  /** Compat: alias para código que usa center/range/tiles/creatures/getCreature/setCenter/setTile. */
+  get center() { return this.m_centralPosition }
+  set center(pos) { this.setCentralPosition(pos || this.m_centralPosition) }
+  get tiles() { return this.m_tiles }
+  get creatures() { return this.m_knownCreatures }
+  get range() { return this.m_awareRange }
+  setCenter(pos) { this.setCentralPosition(pos) }
+  setTile(pos, tile) {
+    if (!pos) return
+    this.m_tiles.set(this._key(pos.x, pos.y, pos.z), tile)
+  }
+  getCreature(id) { return this.getCreatureById(id) }
+  upsertCreature(creature) { this.addCreature(creature) }
+  key(x, y, z) { return this._key(x, y, z) }
+
+  /**
+   * Estado para a view (GameMap.loadFromOtState). Fonte única: dados do mapStore; sem DTO no protocolo.
+   */
+  getMapStateForView() {
+    const pos = this.getCentralPosition()
+    const zMin = Math.max(0, pos.z - 2)
+    const zMax = Math.min(15, pos.z + 2)
+    const snap = this.snapshotFloors(zMin, zMax)
+    const current = snap.floors?.[pos.z] ?? this.snapshotFloor(pos.z)
+    return {
+      pos: { ...pos },
+      w: current.w,
+      h: current.h,
+      tiles: current.tiles,
+      floors: snap.floors,
+      zMin: snap.zMin,
+      zMax: snap.zMax,
+      range: { ...this.m_awareRange },
+      ts: Date.now(),
+    }
+  }
+}
+
+/** Singleton: instância única do mapa (OTC: g_map). */
+const mapStoreInstance = new MapStore()
+
+export function getMapStore() {
+  return mapStoreInstance
+}
+
+if (typeof window !== 'undefined') {
+  window.__otMapStore = mapStoreInstance
 }
