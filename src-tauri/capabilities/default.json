@@ -1,0 +1,6 @@
+{
+    "identifier": "main",
+    "description": "Allow the main window to listen for core events.",
+    "windows": ["main"],
+    "permissions": ["core:event:default"]
+}

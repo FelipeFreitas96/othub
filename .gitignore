@@ -1,0 +1,42 @@
+# Dependencies
+node_modules
+package-lock.json
+
+# Build outputs
+dist
+dist-ssr
+*.local
+
+# Tauri
+src-tauri/target
+src-tauri/Cargo.lock
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+Thumbs.db
+
+*.spr
+*.dat
