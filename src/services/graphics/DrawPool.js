@@ -210,12 +210,20 @@ export class DrawPool {
     this.m_shouldRepaint = false
 
     this.plane = new THREE.PlaneGeometry(1, 1)
+    
+    // OTC: O centro da visualização (player) não é necessariamente w/2, h/2.
+    // No Tibia, a área visível é 15x11, mas a área "aware" é maior (ex: 18x14).
+    // O player fica na posição (8, 6) de um grid 18x14.
+    const centerX = 8
+    const centerY = 6
+
     this.tileGroups = this.scene ? Array.from({ length: this.w * this.h }, () => new THREE.Group()) : []
     if (this.scene) {
       for (let ty = 0; ty < this.h; ty++) {
         for (let tx = 0; tx < this.w; tx++) {
           const g = this.tileGroups[ty * this.w + tx]
-          g.position.set(tx - this.w / 2 + 0.5, (this.h - 1 - ty) - this.h / 2 + 0.5, 0)
+          // Posiciona cada tile relativo ao centro (player)
+          g.position.set(tx - centerX, centerY - ty, 0)
           this.scene.add(g)
         }
       }
@@ -669,10 +677,16 @@ export class DrawPool {
     const m = new THREE.Mesh(this.plane, mat)
     m.visible = true
     m.scale.set(width, height, 1)
-    const ox = width > 1 ? (width - 1) / 2 : 0
-    let oy = height > 1 ? (height - 1) / 2 : 0
-    if (height > 1) oy -= 1
+    
+    // No Three.js, a posição (0,0) do Mesh é o seu centro.
+    // Para um sprite de largura 'width', o centro visual está em width/2.
+    // No Tibia, sprites multi-tile crescem para a esquerda e para cima.
+    // O ponto de ancoragem é o canto inferior direito do tile.
+    const ox = (width - 1) / 2
+    const oy = (height - 1) / 2
+    
     const threeZ = -z
+    // tileX - tx e tileY - ty lidam com offsets sub-tile (se houver)
     m.position.set(ox + dx + (tileX - tx), oy + dy + (tileY - ty), threeZ)
     m.renderOrder = 15 - z
     this.tileGroups[ty * this.w + tx].add(m)

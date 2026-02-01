@@ -828,19 +828,41 @@ export class ProtocolGameParse {
     const newPos = this.getPosition(msg)
 
     if (!ref || !ref.thing || ref.creatureId == null) return
-    if (!g_map.removeThingByPos(ref.fromPos, ref.stackPos)) return
+    
+    // 1) Obtém a instância da criatura ANTES de limpar o mapa
+    let creature = g_map.getCreatureById(ref.creatureId)
+    
+    // 2) Remove a criatura de sua posição antiga (estática e walking)
+    g_map.removeCreatureById(ref.creatureId)
 
-    const creature = g_map.getCreatureById(ref.creatureId)
+    // 3) Inicia o walk na instância persistente
     if (creature) {
       creature.allowAppearWalk()
-      creature.walk(ref.fromPos, newPos, g_map)
+      // Se a criatura já está andando, não reinicia o walk para evitar duplicidade de offset
+      if (!creature.isWalking()) {
+        creature.walk(ref.fromPos, newPos, g_map)
+      }
+      if (creature.isCameraFollowing()) {
+        g_map.notificateCameraMove(creature.getWalkOffset())
+      }
     }
 
+    // 4) Atualiza os dados do "thing" (objeto de rede)
     if (ref.thing.kind === 'creature') {
       ref.thing.direction = creature ? Creature.getDirectionFromPosition(ref.fromPos, newPos) : (ref.thing.direction ?? 0)
+      // Garante que o creatureId esteja no objeto para que o snapshot do mapa o preserve
+      if (ref.creatureId != null) ref.thing.creatureId = ref.creatureId
     }
 
+    // 5) Adiciona ao novo tile como objeto estático (o Tile.js cuidará de esconder se isWalking() for true)
     g_map.addThing(ref.thing, newPos, -1)
+
+    // 6) Notifica os MapViews para atualizar o snapshot e incluir a criatura na lista de walking
+    for (const mapView of g_map.m_mapViews) {
+      if (mapView.setMapState) {
+        mapView.setMapState(g_map.getMapStateForView())
+      }
+    }
   }
 
   setTileDescriptionAt(msg, tilePos) {
@@ -972,6 +994,13 @@ export class ProtocolGameParse {
     if (clientVersion <= 750) {
       void (effectId + 1)
     }
+  }
+
+  parseDistanceEffect(msg) {
+    this.getPosition(msg)
+    this.getPosition(msg)
+    const effectId = isFeatureEnabled('GameMagicEffectU16') ? msg.getU16() : msg.getU8()
+    void effectId
   }
 
   parseTakeScreenshot(msg) {
@@ -1178,7 +1207,7 @@ export class ProtocolGameParse {
     const setFloorDescription = (x, y, z, width, height, offset, skip) => {
       for (let nx = 0; nx < width; nx++) {
         for (let ny = 0; ny < height; ny++) {
-          const tilePos = { x: x + nx + offset, y: y + ny + offset, z }
+          const tilePos = { x: x + nx, y: y + ny, z }
           if (skip === 0) {
             skip = setTileDescription(tilePos)
           } else {
@@ -1245,7 +1274,19 @@ export class ProtocolGameParse {
       const dz = Math.abs(pos.z - oldPos.z)
       if (dx <= 1 && dy <= 1 && dz === 0 && (dx !== 0 || dy !== 0)) {
         const playerId = localPlayer.getId()
-        if (playerId != null) localPlayer.walk(oldPos, pos)
+        if (playerId != null) {
+          const creature = g_map.getCreatureById(playerId)
+          if (creature) {
+            creature.allowAppearWalk()
+            if (!creature.isWalking()) {
+              creature.walk(oldPos, pos)
+            }
+            // OTC: if isFollowingCreature() notificateCameraMove
+            if (creature.isCameraFollowing()) {
+              g_map.notificateCameraMove(creature.getWalkOffset())
+            }
+          }
+        }
       }
       localPlayer.onPositionChange(pos, oldPos)
     }

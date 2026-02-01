@@ -50,9 +50,6 @@ export class ProtocolGame {
 
       const cleanup = () => {
         clearTimeout(timeout)
-        this.m_connection.off('receive', onReceive)
-        this.m_connection.off('error', onError)
-        this.m_connection.off('disconnect', onDisconnect)
       }
 
       const resolveOnce = (value) => {
@@ -109,8 +106,6 @@ export class ProtocolGame {
         msg.getU8() // padding
       } else if (protocolInfo.messageSizeCheck) {
         const size = msg.getU16()
-        // No Bridge Tauri, o pacote já vem decodificado e sem o cabeçalho de tamanho do TCP real
-        // O bridge já validou o tamanho no Rust.
         if (size > msg.getUnreadSize()) {
           console.error('[protocol] invalid message size', size, msg.getUnreadSize())
           return
@@ -118,8 +113,6 @@ export class ProtocolGame {
       }
     }
 
-    // OTC: parseMessage(inputMessage); recv();
-    // In JS, onRecv is triggered by the connection for each packet.
     const ctx = {
       connection: this.m_connection,
       characterName: this.m_characterName,
@@ -134,7 +127,12 @@ export class ProtocolGame {
         }
       }
     }
-    await this.m_protocolGameParser.parseMessage(msg, ctx)
+
+    try {
+      await this.m_protocolGameParser.parseMessage(msg, ctx)
+    } finally {
+      // OTC: recv(); - continue receiving even after errors
+    }
   }
 
   /** OTC: ProtocolGame::sendLoginPacket – protocolgamesend.cpp */

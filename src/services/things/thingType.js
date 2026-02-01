@@ -250,6 +250,11 @@ export class ThingType {
     let dy = (this.getDisplacementY?.() ?? this.m_displacement?.y ?? 0) / TILE_PIXELS
     dx += (pixelOffsetX || 0) / TILE_PIXELS
     dy += (pixelOffsetY || 0) / TILE_PIXELS
+    
+    // Debug: Se o offset for maior que 1 tile, algo está errado na origem do offset
+    if (Math.abs(dx) > 1.1 || Math.abs(dy) > 1.1) {
+      console.warn(`[ThingType] Offset excessivo detectado: dx=${dx}, dy=${dy}. PixelOffset: ${pixelOffsetX}, ${pixelOffsetY}`)
+    }
     // OTC tile.cpp drawThing: newDest = dest - drawElevation * scaleFactor; thing->draw(newDest); updateElevation(thing, drawElevation).
     // Elevation = deslocamento em y (dy -). A elevation do thing atual NÃO entra na sua posição; só atualiza drawElevation para o próximo.
     const dyElev = drawElevationPx / TILE_PIXELS

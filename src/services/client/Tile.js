@@ -67,9 +67,19 @@ export class Tile {
 
   setStack(stack, meta, types) {
     const raw = (stack || []).slice(0, MAX_THINGS)
-    this.m_things = raw.map((e) =>
-      e.kind === 'creature' ? new Creature(e) : new Item(e, types)
-    )
+    this.m_things = raw.map((e) => {
+      if (e.kind === 'creature') {
+        const id = e.creatureId ?? e.id
+        const known = g_map?.getCreatureById?.(id)
+        if (known) {
+          // Atualiza os dados da criatura conhecida com os novos dados da rede
+          known.m_entry = { ...known.m_entry, ...e }
+          return known
+        }
+        return new Creature(e)
+      }
+      return new Item(e, types)
+    })
     this.m_meta = meta
     this.m_isCompletelyCovered = 0
     this.m_isCovered = 0
@@ -84,9 +94,14 @@ export class Tile {
 
   /** OTC: Tile::removeWalkingCreature(creature) – remove criatura da lista de walking do tile. */
   static removeWalkingCreature(tile, creature) {
-    if (!tile?.walkingCreatures?.length) return
-    const idx = tile.walkingCreatures.indexOf(creature)
-    if (idx >= 0) tile.walkingCreatures.splice(idx, 1)
+    if (!tile?.walkingCreatures?.length || !creature) return
+    const id = creature.getId?.() ?? creature.m_entry?.creatureId ?? creature.m_entry?.id
+    if (id == null) return
+    
+    tile.walkingCreatures = tile.walkingCreatures.filter(c => {
+      const cid = c.getId?.() ?? c.m_entry?.creatureId ?? c.m_entry?.id
+      return cid == null || (Number(cid) !== Number(id) && String(cid) !== String(id))
+    })
   }
 
   static addWalkingCreatureToTile(creature, fromPos) {
@@ -213,24 +228,49 @@ export class Tile {
 
     for (const thing of this.m_things) {
       if (!thing.isCreature?.()) continue
-      const creatureId = thing.m_entry?.creatureId ?? thing.m_entry?.id
+      
+      // Obtém o ID único da criatura. 
+      const creatureId = thing.getId?.() ?? thing.m_entry?.creatureId ?? thing.m_entry?.id
       const known = g_map?.getCreatureById?.(creatureId)
+      
+      // Se a criatura é conhecida e está andando (em qualquer lugar do mapa), 
+      // NÃO desenha a versão estática dela neste tile.
       if (known?.isWalking?.()) continue
+      
+      // Se ela está na lista de walking deste tile específico, também pula
       if (creatureId != null && walkingIds.has(String(creatureId))) continue
+      
       const creatureToDraw = known ?? thing
       this._drawThing(creatureToDraw, pipeline, drawFlags, state.drawElevationPx, steps, state)
     }
-    // OTC: g_drawPool.setDrawOrder(DrawOrder::THIRD); for (creature : m_walkingCreatures) creature->draw(cDest, flags); g_drawPool.resetDrawOrder();
+
+    // Desenha criaturas que estão "atravessando" este tile (walking)
     if (walking.length) {
       steps.push(() => pipeline.setDrawOrder(DrawOrder.THIRD))
       for (const wc of walking) {
-        const creature = new Creature(wc.entry)
+        const creatureId = wc.entry?.creatureId ?? wc.entry?.id
+        const known = g_map?.getCreatureById?.(creatureId)
+        
+        // Se a criatura conhecida não está mais andando, ela deve ser desenhada
+        // apenas como um objeto estático no seu tile de destino (m_things).
+        if (known && !known.isWalking()) continue
+
+        // Usa a instância real para manter a animação fluida (passos, offsets)
+        const creatureToDraw = known ?? new Creature(wc.entry)
+        
         const z = this.z
         const drawX = state.drawX
         const drawY = state.drawY
-        const offsetX = wc.offsetX
-        const offsetY = wc.offsetY
-        steps.push(() => creature.draw(pipeline, drawX, drawY, 0, 0, z, offsetX, offsetY))
+        
+        // No OTClient, criaturas em movimento são desenhadas com seu offset real
+        // O offsetX/Y do snapshot serve como fallback caso a instância conhecida suma.
+        const off = (known && known.isWalking()) ? known.getWalkOffset() : { x: wc.offsetX, y: wc.offsetY }
+
+        steps.push(() => {
+          if (typeof creatureToDraw.draw === 'function') {
+            creatureToDraw.draw(pipeline, drawX, drawY, 0, 0, z, off.x, off.y)
+          }
+        })
       }
       steps.push(() => pipeline.resetDrawOrder())
     }

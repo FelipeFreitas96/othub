@@ -156,9 +156,18 @@ export class ClientMap {
     }
   }
 
-  /** OTC: Map::notificateWalkTerminated(creature) – notifica fim do walk; instância singular sobrescreve para localPlayer.terminateWalk. */
+  /** OTC: Map::notificateWalkTerminated(creature) – notifica fim do walk. */
   notificateWalkTerminated(creature) {
-    // Base: vazio; singleton sobrescreve
+    const pos = creature.m_fromPos || creature.m_position
+    if (pos) {
+      this.notificateTileUpdate(pos, creature, 'clean')
+    }
+    // Força atualização de todos os MapViews para remover a criatura da lista de walking
+    for (const mapView of this.m_mapViews) {
+      if (mapView.setMapState) {
+        mapView.setMapState(this.getMapStateForView())
+      }
+    }
   }
 
   /**
@@ -257,6 +266,9 @@ export class ClientMap {
       const walkingCreatures = []
       if (tile && (tile.walkingCreatures || []).length) {
         for (const c of (tile.walkingCreatures || [])) {
+          // CRITICAL: Apenas inclui na lista de snapshot se a criatura ainda estiver andando
+          if (!c.isWalking()) continue
+
           const off = c.getWalkOffset?.() ?? { x: 0, y: 0 }
           walkingCreatures.push({
             entry: { ...(c.m_entry || {}), direction: c.m_direction, walking: true, walkAnimationPhase: c.m_walkAnimationPhase ?? 0 },
@@ -295,7 +307,18 @@ export class ClientMap {
 
   removeCreatureById(id) {
     if (id == null) return
-    this.m_knownCreatures.delete(id)
+    
+    // Remove a criatura de todos os tiles onde ela possa estar (m_things)
+    // Mas NÃO remove da lista de conhecidas (m_knownCreatures) para não perder o estado de walk
+    for (const tile of this.m_tiles.values()) {
+      if (tile.things) {
+        tile.things = tile.things.filter(t => {
+          if (t.kind !== 'creature') return true
+          const cid = t.creatureId ?? t.id
+          return cid == null || (Number(cid) !== Number(id) && String(cid) !== String(id))
+        })
+      }
+    }
   }
 
   clean() {

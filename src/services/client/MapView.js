@@ -16,8 +16,6 @@ import { localPlayer } from '../game/LocalPlayer.js'
 import { g_map } from './ClientMap.js'
 
 const TILE_PIXELS = 32
-/** LERP 0 = câmera fixa no alvo (sem suavização). */
-const CAMERA_FOLLOW_LERP = 0
 
 export class MapView {
   constructor({ host, w, h, thingsRef }) {
@@ -160,24 +158,27 @@ export class MapView {
       const playerId = localPlayer?.getId?.()
       if (playerId != null && g_map.getCreatureById) {
         const creature = g_map.getCreatureById(playerId)
-        if (creature?.m_walking && creature.getWalkOffset) {
-          const off = creature.getWalkOffset()
-          targetX = pos.x + (off.x ?? 0) / TILE_PIXELS
-          targetY = pos.y + (off.y ?? 0) / TILE_PIXELS
+        if (creature) {
+          if (creature.m_walking && creature.getWalkOffset) {
+            const off = creature.getWalkOffset()
+            // Câmera segue a posição visual exata: origem + offset
+            targetX = creature.m_fromPos.x + (off.x / TILE_PIXELS)
+            targetY = creature.m_fromPos.y - (off.y / TILE_PIXELS)
+          } else if (creature.m_position) {
+            // Câmera segue a posição lógica atual
+            targetX = creature.m_position.x
+            targetY = creature.m_position.y
+          }
         }
       }
-      if (this.m_smoothCameraX == null) this.m_smoothCameraX = targetX
-      if (this.m_smoothCameraY == null) this.m_smoothCameraY = targetY
-      if (CAMERA_FOLLOW_LERP <= 0) {
-        this.m_smoothCameraX = targetX
-        this.m_smoothCameraY = targetY
-      } else {
-        this.m_smoothCameraX += (targetX - this.m_smoothCameraX) * CAMERA_FOLLOW_LERP
-        this.m_smoothCameraY += (targetY - this.m_smoothCameraY) * CAMERA_FOLLOW_LERP
-      }
+      
+      // Estilo OTClient: Câmera travada no offset visual do player
+      this.m_smoothCameraX = targetX
+      this.m_smoothCameraY = targetY
+
       const offsetX = this.m_smoothCameraX - pos.x
       const offsetY = this.m_smoothCameraY - pos.y
-      this.camera.position.set(-offsetX, -offsetY, 10)
+      this.camera.position.set(offsetX, -offsetY, 10)
     }
     if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
     this.pipeline.beginFrame()

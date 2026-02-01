@@ -173,9 +173,13 @@ export class Creature {
   updateWalkingTile() {
     if (!this.m_fromPos || !this.m_toPos) return
     const progress = Math.min(1, this.m_walkedPixels / TILE_PIXELS)
-    const x = Math.floor(this.m_fromPos.x + (this.m_toPos.x - this.m_fromPos.x) * progress)
-    const y = Math.floor(this.m_fromPos.y + (this.m_toPos.y - this.m_fromPos.y) * progress)
+    
+    // OTC: A criatura permanece no tile de origem (m_fromPos) durante todo o walk
+    // Ela só é removida do tile de origem no terminateWalk.
+    const x = this.m_fromPos.x
+    const y = this.m_fromPos.y
     const z = this.m_fromPos.z
+    
     const newWalkingTile = g_map.getOrCreateTile?.({ x, y, z })
     if (newWalkingTile === this.m_walkingTile) return
     if (this.m_walkingTile) {
@@ -246,10 +250,15 @@ export class Creature {
       this.m_direction = this.m_walkTurnDirection
       this.m_walkTurnDirection = DirInvalid
     }
+    
+    // Salva a posição de origem antes de limpar
+    const oldPos = this.m_fromPos ? { ...this.m_fromPos } : null
+    
     if (this.m_walkingTile) {
       Tile.removeWalkingCreature(this.m_walkingTile, this)
       this.m_walkingTile = null
     }
+    
     this.m_walkedPixels = 0
     this.m_walkOffsetX = 0
     this.m_walkOffsetY = 0
@@ -258,7 +267,11 @@ export class Creature {
     this.m_fromPos = null
     this.m_toPos = null
     this.m_allowAppearWalk = false
-    g_map?.notificateWalkTerminated?.(this)
+    
+    // Notifica o mapa que o walk terminou para atualizar o snapshot visual
+    if (g_map) {
+      g_map.notificateWalkTerminated(this)
+    }
   }
 
   /**
@@ -367,14 +380,26 @@ export class Creature {
 
   /**
    * OTC Creature::updateWalkOffset() – offset em pixels (walkedPixels, direction).
+   * A criatura está no tile de ORIGEM (fromPos).
+   * No sistema de coordenadas do jogo:
+   * Norte (Y diminui): Offset Y deve ser NEGATIVO para a sprite subir.
+   * Sul (Y aumenta): Offset Y deve ser POSITIVO para a sprite descer.
+   * Oeste (X diminui): Offset X deve ser NEGATIVO para a sprite ir para a esquerda.
+   * Leste (X aumenta): Offset X deve ser POSITIVO para a sprite ir para a direita.
    */
   static getWalkOffset(walkedPixels, direction) {
     let x = 0
     let y = 0
-    if (direction === DirNorth || direction === DirNorthEast || direction === DirNorthWest) y = TILE_PIXELS - walkedPixels
-    else if (direction === DirSouth || direction === DirSouthEast || direction === DirSouthWest) y = walkedPixels - TILE_PIXELS
-    if (direction === DirEast || direction === DirNorthEast || direction === DirSouthEast) x = walkedPixels - TILE_PIXELS
-    else if (direction === DirWest || direction === DirNorthWest || direction === DirSouthWest) x = TILE_PIXELS - walkedPixels
+    const offset = Math.min(TILE_PIXELS, Math.max(0, walkedPixels))
+    
+    // Norte: Y diminui no mundo. Sul: Y aumenta.
+    // Leste: X aumenta no mundo. Oeste: X diminui.
+    if (direction === DirNorth || direction === DirNorthEast || direction === DirNorthWest) y = offset
+    else if (direction === DirSouth || direction === DirSouthEast || direction === DirSouthWest) y = -offset
+    
+    if (direction === DirEast || direction === DirNorthEast || direction === DirSouthEast) x = offset
+    else if (direction === DirWest || direction === DirNorthWest || direction === DirSouthWest) x = -offset
+    
     return { x, y }
   }
 
@@ -461,8 +486,26 @@ export class Creature {
     if (!ct) return
     const things = pipeline.thingsRef?.current
     if (!things?.types) return
-    const off = this.m_walking ? this.getWalkOffset() : { x: 0, y: 0 }
-    const dest = { tileX, tileY, drawElevationPx, zOff, tileZ, pixelOffsetX: pixelOffsetX + off.x, pixelOffsetY: pixelOffsetY + off.y }
+    
+    const hasExternalOffset = (pixelOffsetX !== 0 || pixelOffsetY !== 0)
+    const off = (this.m_walking && !hasExternalOffset) ? this.getWalkOffset() : { x: 0, y: 0 }
+    
+    // Se a criatura está andando, ela já está sendo desenhada pelo Tile.js 
+    // com o offset correto na lista de walkingCreatures.
+    // Se chegarmos aqui e m_walking for true, mas não houver offset externo,
+    // significa que estamos tentando desenhar a criatura como um Thing estático.
+    // No OTClient, criaturas em walk NÃO são desenhadas como Things estáticos.
+    if (this.m_walking && !hasExternalOffset) return
+
+    const dest = { 
+      tileX, 
+      tileY, 
+      drawElevationPx, 
+      zOff, 
+      tileZ, 
+      pixelOffsetX: pixelOffsetX + off.x, 
+      pixelOffsetY: pixelOffsetY + off.y 
+    }
     const dir = this.m_walking ? this.m_direction : (this.m_entry?.direction ?? 0)
     const px = ct.patternX ?? ct.m_numPatternX ?? 1
     const xPattern = px >= 4 ? (dir & 3) : 0

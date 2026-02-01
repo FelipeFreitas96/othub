@@ -7,8 +7,8 @@ import { WINDOW_CONFIG, LABELS, BUTTONS, CLIENT_VERSIONS, DEFAULT_SERVER, valida
  * MainWindow "Enter Game", size 280x302
  */
 export default function EnterGameWindow({ onLogin, onLoginSuccess }) {
-  const [account, setAccount] = useState('')
-  const [password, setPassword] = useState('')
+  const [account, setAccount] = useState('poporai')
+  const [password, setPassword] = useState('AhW3RDwl')
   const [server, setServer] = useState(DEFAULT_SERVER.host)
   const [port, setPort] = useState(DEFAULT_SERVER.port)
   const [clientVersion, setClientVersion] = useState(DEFAULT_SERVER.clientVersion)
