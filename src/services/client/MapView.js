@@ -23,6 +23,7 @@ export class MapView {
     this.w = w
     this.h = h
     this.thingsRef = thingsRef
+    this.host = host
 
     this.m_cachedFirstVisibleFloor = 7
     this.m_cachedLastVisibleFloor = 7
@@ -32,6 +33,10 @@ export class MapView {
     // Smooth camera: lerp toward (center + walk offset) so the view follows the player smoothly when walking
     this.m_smoothCameraX = null
     this.m_smoothCameraY = null
+
+    // Sistema de zoom para área aware
+    this.m_fitAwareArea = true // Ativa o sistema de fit automático
+    this.m_zoomLevel = 1.0     // Zoom calculado para encaixar a área aware
 
     this.scene = new THREE.Scene()
     this.camera = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 0.1, 100)
@@ -142,48 +147,40 @@ export class MapView {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
     if (g_map?.center) {
       const pos = g_map.center
-      const last = this._lastMapStoreCenter
+      
+      // Atualiza o mapa sempre que a posição central mudar
+      const last = this._lastCenter
       if (!last || last.x !== pos.x || last.y !== pos.y || last.z !== pos.z) {
-        this._lastMapStoreCenter = { x: pos.x, y: pos.y, z: pos.z }
+        this._lastCenter = { x: pos.x, y: pos.y, z: pos.z }
         this.setMapState(g_map.getMapStateForView())
-        if (this.m_smoothCameraX == null || this.m_smoothCameraY == null) {
-          this.m_smoothCameraX = pos.x
-          this.m_smoothCameraY = pos.y
-        }
       }
 
-      // OTClient camera logic: The camera follows the player's VISUAL position.
-      // Visual position = fromPos + walkOffset in world tile units.
-      // The walkOffset from getWalkOffset() uses the following convention:
-      //   - North: off.y is POSITIVE (0 to 32) but world Y DECREASES
-      //   - South: off.y is NEGATIVE (0 to -32) but world Y INCREASES
-      //   - East: off.x is POSITIVE (0 to 32) and world X INCREASES
-      //   - West: off.x is NEGATIVE (0 to -32) and world X DECREASES
-      // So for X, visual = fromPos.x + (off.x / 32) [same sign]
-      // For Y, visual = fromPos.y - (off.y / 32) [opposite sign for Y]
+      // Calcula o offset da câmera baseado na animação de walk do jogador
       let cameraOffsetX = 0
       let cameraOffsetY = 0
       
       const playerId = localPlayer?.getId?.()
-      if (playerId != null && g_map.getCreatureById) {
-        const creature = g_map.getCreatureById(playerId)
-        if (creature && creature.m_walking && creature.m_fromPos && creature.getWalkOffset) {
-          const off = creature.getWalkOffset()
-          
-          // Calculate player's visual world position
-          // X: positive offset moves right (world X increases)
-          // Y: positive offset (north) means world Y decreases, so we subtract
-          const visualX = creature.m_fromPos.x + (off.x / TILE_PIXELS)
-          const visualY = creature.m_fromPos.y - (off.y / TILE_PIXELS)
-          
-          // Camera offset = visual position - map center
-          cameraOffsetX = visualX - pos.x
-          // Convert to Three.js Y (positive = up, Tibia Y positive = down)
-          cameraOffsetY = pos.y - visualY
-        }
+      const creature = playerId != null ? g_map.getCreatureById?.(playerId) : null
+      
+      if (creature?.m_walking && creature.m_fromPos && creature.getWalkOffset) {
+        const off = creature.getWalkOffset()
+        
+        // O jogador está no tile fromPos, mas visualmente está em fromPos + offset
+        // O mapa está centrado em pos (posição do servidor)
+        // A câmera precisa compensar a diferença entre onde o jogador ESTÁ e onde ele PARECE estar
+        
+        // Posição visual do jogador (em tiles)
+        // X: offset positivo = movendo para direita
+        // Y: offset positivo = movendo para norte (Y diminui no mundo)
+        const visualX = creature.m_fromPos.x + (off.x / TILE_PIXELS)
+        const visualY = creature.m_fromPos.y - (off.y / TILE_PIXELS)
+        
+        // Offset da câmera = posição visual - centro do mapa
+        cameraOffsetX = visualX - pos.x
+        // Converte para coordenadas Three.js (Y invertido)
+        cameraOffsetY = pos.y - visualY
       }
       
-      // Apply camera offset to keep player centered
       this.camera.position.set(cameraOffsetX, cameraOffsetY, 10)
     }
     
@@ -212,6 +209,7 @@ export class MapView {
     
     const pos = g_map.center
     const range = g_map.getAwareRange()
+    const playerId = localPlayer?.getId?.()
     
     for (const creature of g_map.m_knownCreatures.values()) {
       if (!creature.isWalking() || !creature.m_fromPos) continue
@@ -232,18 +230,27 @@ export class MapView {
       // Get walk offset in pixels
       const off = creature.getWalkOffset()
       
+      // IMPORTANTE: Para o jogador local, a câmera já compensa o movimento.
+      // Se aplicarmos o offset aqui também, teremos movimento duplo!
+      // Então para o local player, não aplicamos offset no sprite.
+      const creatureId = creature.getId?.()
+      const isLocalPlayer = playerId != null && creatureId != null && Number(creatureId) === Number(playerId)
+      
+      const drawOffsetX = isLocalPlayer ? 0 : off.x
+      const drawOffsetY = isLocalPlayer ? 0 : off.y
+      
       // Set draw order to THIRD (same as creatures in Tile.drawCreature)
       this.pipeline.setDrawOrder(DrawOrder.THIRD)
       
-      // Draw the creature with its walk offset
+      // Draw the creature with its walk offset (0 for local player, since camera compensates)
       creature.draw(
         this.pipeline,
         viewX,
         viewY,
         0, 0,
         fromPos.z,
-        off.x,
-        off.y,
+        drawOffsetX,
+        drawOffsetY,
         true // isWalkDraw = true
       )
       
@@ -252,26 +259,109 @@ export class MapView {
     }
   }
 
+  /**
+   * Define um zoom manual (desativa o fit automático).
+   * @param {number} zoom - Nível de zoom (1.0 = 100%, 2.0 = 200%, etc.)
+   */
+  setManualZoom(zoom) {
+    this.m_fitAwareArea = false
+    this.m_zoomLevel = Math.max(0.1, Math.min(5.0, zoom))
+    
+    const vw = Math.max(1, this.host.clientWidth)
+    const vh = Math.max(1, this.host.clientHeight)
+    
+    // Calcula as dimensões do viewport baseado no zoom
+    const worldW = this.w / this.m_zoomLevel
+    const worldH = this.h / this.m_zoomLevel
+    
+    const viewAspect = vw / vh
+    const worldAspect = worldW / worldH
+    
+    if (viewAspect > worldAspect) {
+      const halfW = (worldH * viewAspect) / 2
+      this.camera.left = -halfW
+      this.camera.right = halfW
+      this.camera.top = worldH / 2
+      this.camera.bottom = -worldH / 2
+    } else {
+      const halfH = (worldW / viewAspect) / 2
+      this.camera.left = -worldW / 2
+      this.camera.right = worldW / 2
+      this.camera.top = halfH
+      this.camera.bottom = -halfH
+    }
+    
+    this.camera.updateProjectionMatrix()
+  }
+
+  /**
+   * Obtém as dimensões da área visível do viewport (câmera).
+   * No Tibia, a área visível é 15x11 tiles (jogador no centro).
+   * A área aware (18x14) é maior pois inclui buffer de tiles nas bordas.
+   */
+  getViewportDimensions() {
+    // Área visível real do Tibia: 15x11 tiles
+    return { width: 15, height: 11 }
+  }
+
+  /**
+   * Ativa/desativa o sistema de fit automático para a área aware.
+   * @param {boolean} enabled - Se true, a câmera faz zoom para encaixar a área aware na tela
+   */
+  setFitAwareArea(enabled) {
+    this.m_fitAwareArea = enabled
+    if (this.host) this.resize(this.host)
+  }
+
+  /**
+   * Retorna se o sistema de fit automático está ativo.
+   */
+  isFitAwareAreaEnabled() {
+    return this.m_fitAwareArea
+  }
+
+  /**
+   * Obtém o nível de zoom atual calculado para encaixar a área aware.
+   */
+  getZoomLevel() {
+    return this.m_zoomLevel
+  }
+
   resize(host) {
     const vw = Math.max(1, host.clientWidth)
     const vh = Math.max(1, host.clientHeight)
     this.renderer.setSize(vw, vh, false)
 
+    // O mapa completo é 18x14 (área aware), mas a câmera mostra apenas 15x11 (área visível)
+    // Isso cria um "zoom" natural - a câmera está mais perto, mostrando menos tiles
+    const { width: viewportW, height: viewportH } = this.getViewportDimensions()
+    
+    // Usa viewport (15x11) se fit está ativo, senão usa o mapa completo
+    const cameraW = this.m_fitAwareArea ? viewportW : this.w
+    const cameraH = this.m_fitAwareArea ? viewportH : this.h
+
     const viewAspect = vw / vh
-    const worldAspect = this.w / this.h
-    if (viewAspect > worldAspect) {
-      const halfW = (this.h * viewAspect) / 2
+    const cameraAspect = cameraW / cameraH
+
+    // Ajusta a câmera para mostrar apenas a área do viewport
+    if (viewAspect > cameraAspect) {
+      // Tela é mais larga - altura é o limitante
+      const halfW = (cameraH * viewAspect) / 2
       this.camera.left = -halfW
       this.camera.right = halfW
-      this.camera.top = this.h / 2
-      this.camera.bottom = -this.h / 2
+      this.camera.top = cameraH / 2
+      this.camera.bottom = -cameraH / 2
+      this.m_zoomLevel = vh / (cameraH * TILE_PIXELS)
     } else {
-      const halfH = (this.w / viewAspect) / 2
-      this.camera.left = -this.w / 2
-      this.camera.right = this.w / 2
+      // Tela é mais alta - largura é o limitante
+      const halfH = (cameraW / viewAspect) / 2
+      this.camera.left = -cameraW / 2
+      this.camera.right = cameraW / 2
       this.camera.top = halfH
       this.camera.bottom = -halfH
+      this.m_zoomLevel = vw / (cameraW * TILE_PIXELS)
     }
+
     this.camera.updateProjectionMatrix()
   }
 

@@ -26,8 +26,11 @@ export default function GameMapPanel() {
 
     const thingsRef = { current: getThings() }
 
+    // MapView usa a área aware completa (18x14) para processar tiles
+    // O zoom da câmera do Three.js ajusta para mostrar apenas a área visível (15x11)
     mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
     g_map.addMapView(mapViewRef.current)
+    
     if (g_map.center?.x != null) {
       mapViewRef.current.setMapState(g_map.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
@@ -86,6 +89,14 @@ export default function GameMapPanel() {
       }
     }
 
+    // ResizeObserver para atualizar o fit quando o container mudar de tamanho
+    const resizeObserver = new ResizeObserver(() => {
+      if (mapViewRef.current && host) {
+        mapViewRef.current.resize(host)
+      }
+    })
+    resizeObserver.observe(host)
+
     window.addEventListener('ot:map', onMap)
     window.addEventListener('ot:mapMove', onMapMove)
     window.addEventListener('keydown', onKeyDown, true)
@@ -104,9 +115,11 @@ export default function GameMapPanel() {
 
     return () => {
       cancelAnimationFrame(raf)
+      resizeObserver.disconnect()
       window.removeEventListener('ot:map', onMap)
       window.removeEventListener('ot:mapMove', onMapMove)
       window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
       g_map.removeMapView(mapViewRef.current)
       mapViewRef.current?.dispose()
       mapViewRef.current = null

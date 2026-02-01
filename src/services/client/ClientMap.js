@@ -162,11 +162,9 @@ export class ClientMap {
     if (pos) {
       this.notificateTileUpdate(pos, creature, 'clean')
     }
-    // Força atualização de todos os MapViews para remover a criatura da lista de walking
+    // Notifica os MapViews para atualizarem o cache de tiles visíveis
     for (const mapView of this.m_mapViews) {
-      if (mapView.setMapState) {
-        mapView.setMapState(this.getMapStateForView())
-      }
+      mapView.requestVisibleTilesCacheUpdate?.()
     }
   }
 
