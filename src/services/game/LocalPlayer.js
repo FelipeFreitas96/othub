@@ -125,18 +125,33 @@ export class LocalPlayer {
     if (this.isDead()) return false
     if (this.isWalkLocked() && !ignoreLock) return false
 
-    // OTC: Permite enfileirar até 2 pre-walks para garantir fluidez (estilo WASD)
-    const maxSteps = this.getWalkMaxSteps() || 2
-    if (this.m_preWalks.length >= maxSteps) return false
+    // Sistema de segurança: Verifica se a criatura está em estado de walk ativo
+    const id = this.getId()
+    const creature = g_map?.getCreatureById?.(id)
+    
+    if (creature) {
+      // Bloqueia se a criatura está em estado de walking
+      if (creature.m_walking) return false
+      
+      // Bloqueia se há walkOffset ativo (animação em progresso)
+      if (creature.m_walkOffsetX !== 0 || creature.m_walkOffsetY !== 0) return false
+      
+      // Bloqueia se há walkedPixels pendentes
+      if (creature.m_walkedPixels > 0 && creature.m_walkedPixels < 32) return false
+    }
 
-    // Se estiver andando (animação em curso), só permite o próximo passo se 
-    // já tiver passado tempo suficiente para o "próximo" passo lógico.
+    // Bloqueia se há preWalks pendentes
+    if (this.m_preWalks.length > 0) return false
+
+    // Verifica se o serverWalk está em andamento
+    if (this.m_serverWalk) return false
+
+    // Se estiver andando (animação em curso), bloqueia até terminar
     const elapsed = this.m_walkTimerStart > 0 ? clockMillis() - this.m_walkTimerStart : 999999
     const stepDuration = this.getStepDuration()
     
-    // No OTC, você pode iniciar o próximo passo um pouco antes do anterior terminar visualmente
-    // para compensar o ping e manter a fluidez.
-    return elapsed >= stepDuration * 0.9
+    // Só permite novo walk quando o passo anterior terminou completamente
+    return elapsed >= stepDuration
   }
 
   /** OTC: g_game.getWalkMaxSteps() – 0 = sync by position only. */
@@ -310,6 +325,48 @@ export class LocalPlayer {
   isWalking() {
     const creature = g_map.getCreatureById?.(this.getId())
     return !!creature?.m_walking
+  }
+
+  /**
+   * Sistema de segurança: Verifica se o jogador está em qualquer estado de movimento.
+   * Inclui verificações de m_walking, walkOffset, preWalks e serverWalk.
+   * @returns {boolean} true se o jogador está em movimento, false caso contrário
+   */
+  isCreatureWalking() {
+    const id = this.getId()
+    const creature = g_map?.getCreatureById?.(id)
+    
+    // Verifica estados da criatura
+    if (creature) {
+      if (creature.m_walking) return true
+      if (creature.m_walkOffsetX !== 0 || creature.m_walkOffsetY !== 0) return true
+      if (creature.m_walkedPixels > 0) return true
+    }
+    
+    // Verifica estados do LocalPlayer
+    if (this.m_preWalks.length > 0) return true
+    if (this.m_serverWalk) return true
+    
+    // Verifica pelo timer de walk
+    if (this.m_walkTimerStart > 0) {
+      const elapsed = clockMillis() - this.m_walkTimerStart
+      const stepDuration = this.getStepDuration()
+      if (elapsed < stepDuration) return true
+    }
+    
+    return false
+  }
+
+  /**
+   * Sistema de segurança: Retorna o progresso atual do walk (0-100%).
+   * @returns {number} Porcentagem do walk atual (0 se não estiver andando)
+   */
+  getWalkProgress() {
+    if (this.m_walkTimerStart <= 0) return 0
+    const elapsed = clockMillis() - this.m_walkTimerStart
+    const stepDuration = this.getStepDuration()
+    if (stepDuration <= 0) return 0
+    return Math.min(100, Math.floor((elapsed / stepDuration) * 100))
   }
 
   isDead() {
