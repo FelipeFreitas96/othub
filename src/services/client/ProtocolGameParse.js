@@ -164,7 +164,7 @@ export class ProtocolGameParse {
   }
 
   async parseMessage(msg, ctx) {
-    const { debug, connection, protocolInfo, getLoginSent, callbacks } = ctx
+    const { connection, getLoginSent, callbacks } = ctx
     const { cleanup, resolve, resolveOnce, sendLogin } = callbacks
 
     let prevOpcode = -1
@@ -180,10 +180,6 @@ export class ProtocolGameParse {
         }
 
         switch (opcode) {
-        case GAME_SERVER_OPCODES.GameServerFirstGameOpcode: // 50 – Extended Opcode
-            this.parseExtendedOpcode(msg)
-            break
-
         case GAME_SERVER_OPCODES.GameServerPlayerData:
             this.parsePlayerStats(msg)
             break
@@ -218,10 +214,6 @@ export class ProtocolGameParse {
 
         case GAME_SERVER_OPCODES.GameServerDeleteInventory:
             this.parseRemoveInventoryItem(msg)
-            break
-
-        case GAME_SERVER_OPCODES.GameServerFloorDescription: // 75
-            this.parseFloorDescription(msg)
             break
 
         case GAME_SERVER_OPCODES.GameServerFullMap:
@@ -319,22 +311,13 @@ export class ProtocolGameParse {
             resolve({ ok: false, message: `${waitMsg} (${time}s)` })
             return
 
-        case GAME_SERVER_OPCODES.GameServerSessionEnd:
+          case GAME_SERVER_OPCODES.GameServerSessionEnd:
             const reason = msg.getU8()
             cleanup()
             resolve({ ok: false, message: `Session ended (${reason})` })
             return
 
-        case GAME_SERVER_OPCODES.GameServerStoreButtonIndicators:
-            msg.getU8() // IsSaleBannerVisible
-            msg.getU8() // IsNewBannerVisible
-            break
-
-        case GAME_SERVER_OPCODES.GameServerBugReport:
-            msg.getString()
-            break
-
-        case GAME_SERVER_OPCODES.GameServerPing:
+          case GAME_SERVER_OPCODES.GameServerPing:
             await connection.send(new Uint8Array([GAME_CLIENT_OPCODES.GameClientPingBack]))
             break
 
@@ -391,14 +374,6 @@ export class ProtocolGameParse {
         `[protocol] parseMessage exception (${msg.buffer.length} bytes, ${unread} unread at pos ${msg.position}, last opcode: 0x${typeof prevOpcode !== 'undefined' && prevOpcode >= 0 ? prevOpcode.toString(16) : '?'} (${prevOpcode})): ${e?.message || e}\nNext bytes: ${hex}`
       )
       msg.position = msg.buffer.length
-    }
-  }
-
-  parseExtendedOpcode(msg) {
-    const opcode = msg.getU8()
-    const buffer = msg.getString()
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ot:extendedOpcode', { detail: { opcode, buffer } }))
     }
   }
 
@@ -644,7 +619,7 @@ export class ProtocolGameParse {
   parseTalk(msg) {
     const messageStatements = isFeatureEnabled('GameMessageStatements')
     const messageLevel = isFeatureEnabled('GameMessageLevel')
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
 
     let statement = 0
     if (messageStatements) statement = msg.getU32()
@@ -703,7 +678,7 @@ export class ProtocolGameParse {
   }
 
   parseTextMessage(msg) {
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
     const code = msg.getU8()
     const mode = translateMessageModeFromServer(clientVersion, code)
     let text = ''
@@ -775,7 +750,7 @@ export class ProtocolGameParse {
     const stamina = isFeatureEnabled('GamePlayerStamina')
     const regen = isFeatureEnabled('GamePlayerRegenerationTime')
     const offlineTrain = isFeatureEnabled('GameOfflineTrainingTime')
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
 
     const health = doubleHealth ? msg.getU32() : msg.getU16()
     const maxHealth = doubleHealth ? msg.getU32() : msg.getU16()
@@ -953,7 +928,7 @@ export class ProtocolGameParse {
 
   parseMagicEffect(msg) {
     this.getPosition(msg)
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
     const protocolVersion = clientVersion
     const effectU16 = isFeatureEnabled('GameEffectU16')
 
@@ -1022,7 +997,7 @@ export class ProtocolGameParse {
   }
 
   parsePlayerState(msg) {
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
     const playerStateU16 = isFeatureEnabled('GamePlayerStateU16')
     const playerStateCounter = isFeatureEnabled('GamePlayerStateCounter')
 
@@ -1044,7 +1019,7 @@ export class ProtocolGameParse {
   }
 
   parseOpenContainer(msg) {
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
     const containerPagination = isFeatureEnabled('GameContainerPagination')
     const containerFilter = isFeatureEnabled('GameContainerFilter')
 
@@ -1087,7 +1062,7 @@ export class ProtocolGameParse {
   }
 
   parseLogin(msg) {
-    const clientVersion = g_game.get()
+    const clientVersion = g_game.getClientVersion()
 
     const playerId = msg.getU32()
     const serverBeat = msg.getU16()
@@ -1154,36 +1129,6 @@ export class ProtocolGameParse {
     localPlayer.lockWalk(millis)
   }
 
-  parseFloorDescription(msg) {
-    const pos = this.getPosition(msg)
-    const floor = msg.getU8()
-
-    if (pos.z === floor) {
-      const oldPos = localPlayer.getPosition()
-      if (!g_map.mapKnown) {
-        localPlayer.setPosition(pos)
-      }
-
-      g_map.setCenter(pos)
-
-      if (!g_map.mapKnown) {
-        g_map.m_mapKnown = true
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('ot:mapKnown'))
-        }
-      }
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('ot:mapDescription'))
-        window.dispatchEvent(new CustomEvent('ot:teleport', { detail: { pos, oldPos } }))
-      }
-    }
-
-    const { w, h } = g_map.getAwareDims()
-    const range = g_map.range
-    this.setFloorDescription(msg, pos.x - range.left, pos.y - range.top, floor, w, h, pos.z - floor, 0)
-  }
-
   parseMapDescription(msg) {
     const things = getThings()
     const oldPos = g_map.center ? { ...g_map.center } : null
@@ -1194,7 +1139,7 @@ export class ProtocolGameParse {
     const readThing = () => {
       const id = msg.getU16()
       if (id === 97 || id === 98 || id === 99) { // creature markers (Unknown/Outdated/CreatureTurn)
-        const c = getCreature(msg, id)
+        const c = this.getCreature(msg, id)
         return c || { kind: 'creature', creatureId: 0, id: 0, outfit: null, direction: 0, name: '' }
       }
       const tt = things.types.getItem(id)
@@ -1314,11 +1259,10 @@ export class ProtocolGameParse {
 
   parseMapSlice(msg, baseX, baseY, z, width, height) {
     const things = getThings()
-    const peekU16 = () => msg.buffer[msg.position] | (msg.buffer[msg.position + 1] << 8)
     const readThing = () => {
       const id = msg.getU16()
       if (id === 97 || id === 98 || id === 99) {
-        const c = getCreature(msg, id)
+        const c = this.getCreature(msg, id)
         return c || { kind: 'creature', creatureId: 0, id: 0, outfit: null, direction: 0, name: '' }
       }
       const tt = things.types.getItem(id)
@@ -1334,7 +1278,7 @@ export class ProtocolGameParse {
       let gotEffect = false
       for (let stackPos = 0; stackPos < 256; stackPos++) {
         if (!msg.canRead(2)) break
-        const marker = peekU16()
+        const marker = msg.peekU16()
         if (marker >= 0xff00) {
           const skip = msg.getU16() & 0xff
           g_map.setTile(tilePos, tile)
@@ -1447,16 +1391,9 @@ const GAME_SERVER_OPCODES = {
   GameServerLoginWait: 22,
   GameServerLoginSuccess: 23,
   GameServerSessionEnd: 24,
-  GameServerStoreButtonIndicators: 25,
-  GameServerBugReport: 26,
   GameServerPingBack: 29,
   GameServerPing: 30,
   GameServerChallenge: 31,
-  GameServerFirstGameOpcode: 50,
-  GameServerExtendedOpcode: 50,
-  GameServerCreatureTyping: 56,
-  GameServerFeatures: 67,
-  GameServerFloorDescription: 75,       // 0x4b – descrição de um andar específico
   GameServerFullMap: 100,       // 0x64 – descrição completa do mapa
   GameServerMapTopRow: 101,     // 0x65 – jogador andou norte
   GameServerMapRightRow: 102,   // 0x66 – jogador andou leste

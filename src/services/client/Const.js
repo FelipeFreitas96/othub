@@ -8,6 +8,12 @@ export const SkillEnum = {
     SKILL_FISHING: 6,
 }
 
+export const GameEventsEnum = {
+    processLogin: 'processLogin',
+    onGameStart: 'onGameStart',
+    onConnectionError: 'onConnectionError',
+}
+
 export const MagicEffectsTypeEnum = {
     MAGIC_EFFECTS_END_LOOP: 0, // ends the magic effect loop
     MAGIC_EFFECTS_DELTA: 1, // needs uint8_t delta after type to adjust position
@@ -65,12 +71,4 @@ export const MessageModeEnum = {
     MessageExp: 62,
     MessageExpOthers: 63,
     MessageInvalid: 255,
-}
-
-export const GameEventsEnum = {
-    onGameStart: 'onGameStart',
-    onGameEnd: 'onGameEnd',
-    processLogin: 'processLogin',
-    onConnectionError: 'onConnectionError',
-    onDisconnect: 'onDisconnect',
 }

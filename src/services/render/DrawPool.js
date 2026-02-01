@@ -165,12 +165,13 @@ export class DrawPool {
     return pool
   }
 
-  constructor({ scene, w, h, thingsRef, debugQueue = false, debugDelayMs = 25 } = {}) {
+  constructor({ scene, w, h, thingsRef, mapStoreRef, debugQueue = false, debugDelayMs = 25 } = {}) {
     this.id = 0
     this.scene = scene
     this.w = w ?? 15
     this.h = h ?? 11
     this.thingsRef = thingsRef
+    this.mapStoreRef = mapStoreRef
     this.debugQueue = !!debugQueue
     this.debugDelayMs = Math.max(0, debugDelayMs | 0)
 
@@ -678,3 +679,27 @@ export class DrawPool {
     this.tileGroups[ty * this.w + tx].add(m)
   }
 }
+/** OTC: DrawPoolManager – drawpoolmanager.h/cpp; get(type), repaint(type). Usado por Map::notificateCameraMove. */
+class DrawPoolManager {
+  constructor() {
+    this.m_pools = {}
+  }
+
+  get(type) {
+    return this.m_pools[type] ?? null
+  }
+
+  repaint(drawPoolType) {
+    const pool = this.get(drawPoolType)
+    if (pool && typeof pool.repaint === 'function') pool.repaint()
+  }
+
+  /** Liga um pool a um tipo (ex.: MapView registra seu pipeline em addMapView). */
+  setPool(type, pool) {
+    if (type != null) this.m_pools[type] = pool ?? null
+  }
+}
+
+/** OTC: extern Map g_map; equivalente para draw pool – g_drawPool (drawpoolmanager). */
+export const g_drawPool = new DrawPoolManager()
+

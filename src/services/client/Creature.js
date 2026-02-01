@@ -7,6 +7,7 @@
 
 import { Tile } from './Tile.js'
 import { g_things } from '../things/thingTypeManager.js'
+import { g_map } from './ClientMap.js'
 
 const TILE_PIXELS = 32
 

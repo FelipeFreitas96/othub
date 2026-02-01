@@ -5,6 +5,7 @@
  * Types: OTC usa g_things (ThingTypeManager) global; aqui importamos g_things.
  */
 
+import { g_map } from '../client/ClientMap.js'
 import { Tile } from '../render/Tile.js'
 import { g_things } from './thingTypeManager.js'
 

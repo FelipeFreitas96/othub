@@ -9,6 +9,7 @@ import { DrawFlags } from './drawFlags.js'
 import { DrawOrder } from './DrawPool.js'
 import { Item } from '../client/Item.js'
 import { Creature } from '../client/Creature.js'
+import { g_map } from '../client/ClientMap.js'
 
 const MAX_THINGS = 10
 const TILE_PIXELS = 32
