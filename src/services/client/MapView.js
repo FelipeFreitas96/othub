@@ -10,7 +10,7 @@
 
 import * as THREE from 'three'
 import { GameMap } from '../render/GameMap.js'
-import { DrawPool } from '../graphics/DrawPool.js'
+import { DrawPool, DrawOrder } from '../graphics/DrawPool.js'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags.js'
 import { localPlayer } from '../game/LocalPlayer.js'
 import { g_map } from './ClientMap.js'
@@ -152,41 +152,104 @@ export class MapView {
         }
       }
 
-      // OTC: camera = center + getWalkOffset() em pixels (sem lerp). calcFramebufferSource: drawOffset += m_followingCreature->getWalkOffset() * scaleFactor.
-      let targetX = pos.x
-      let targetY = pos.y
+      // OTClient camera logic: The camera follows the player's VISUAL position.
+      // Visual position = fromPos + walkOffset in world tile units.
+      // The walkOffset from getWalkOffset() uses the following convention:
+      //   - North: off.y is POSITIVE (0 to 32) but world Y DECREASES
+      //   - South: off.y is NEGATIVE (0 to -32) but world Y INCREASES
+      //   - East: off.x is POSITIVE (0 to 32) and world X INCREASES
+      //   - West: off.x is NEGATIVE (0 to -32) and world X DECREASES
+      // So for X, visual = fromPos.x + (off.x / 32) [same sign]
+      // For Y, visual = fromPos.y - (off.y / 32) [opposite sign for Y]
+      let cameraOffsetX = 0
+      let cameraOffsetY = 0
+      
       const playerId = localPlayer?.getId?.()
       if (playerId != null && g_map.getCreatureById) {
         const creature = g_map.getCreatureById(playerId)
-        if (creature) {
-          if (creature.m_walking && creature.getWalkOffset) {
-            const off = creature.getWalkOffset()
-            // Câmera segue a posição visual exata: origem + offset
-            targetX = creature.m_fromPos.x + (off.x / TILE_PIXELS)
-            targetY = creature.m_fromPos.y - (off.y / TILE_PIXELS)
-          } else if (creature.m_position) {
-            // Câmera segue a posição lógica atual
-            targetX = creature.m_position.x
-            targetY = creature.m_position.y
-          }
+        if (creature && creature.m_walking && creature.m_fromPos && creature.getWalkOffset) {
+          const off = creature.getWalkOffset()
+          
+          // Calculate player's visual world position
+          // X: positive offset moves right (world X increases)
+          // Y: positive offset (north) means world Y decreases, so we subtract
+          const visualX = creature.m_fromPos.x + (off.x / TILE_PIXELS)
+          const visualY = creature.m_fromPos.y - (off.y / TILE_PIXELS)
+          
+          // Camera offset = visual position - map center
+          cameraOffsetX = visualX - pos.x
+          // Convert to Three.js Y (positive = up, Tibia Y positive = down)
+          cameraOffsetY = pos.y - visualY
         }
       }
       
-      // Estilo OTClient: Câmera travada no offset visual do player
-      this.m_smoothCameraX = targetX
-      this.m_smoothCameraY = targetY
-
-      const offsetX = this.m_smoothCameraX - pos.x
-      const offsetY = this.m_smoothCameraY - pos.y
-      this.camera.position.set(offsetX, -offsetY, 10)
+      // Apply camera offset to keep player centered
+      this.camera.position.set(cameraOffsetX, cameraOffsetY, 10)
     }
+    
     if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
     this.pipeline.beginFrame()
-    // OTC: tile->draw(transformPositionTo2D(tile->getPosition()), flags). Walking creatures ficam no Tile (m_walkingCreatures); o Tile obtém via pipeline.
+    
+    // OTC: tile->draw(transformPositionTo2D(tile->getPosition()), flags)
     for (const entry of this.m_cachedVisibleTiles) {
       entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y)
     }
+    
+    // Draw walking creatures directly from g_map to ensure they're always visible
+    // This is a safety net in case the snapshot doesn't have the latest walking state
+    this._drawWalkingCreatures()
+    
     this.pipeline.endFrame()
+  }
+
+  /**
+   * Draw walking creatures directly from g_map.m_knownCreatures.
+   * This ensures walking creatures are always drawn even if the snapshot is stale.
+   * OTClient: Walking creatures are drawn with DrawOrder.THIRD (same as static creatures).
+   */
+  _drawWalkingCreatures() {
+    if (!g_map?.m_knownCreatures) return
+    
+    const pos = g_map.center
+    const range = g_map.getAwareRange()
+    
+    for (const creature of g_map.m_knownCreatures.values()) {
+      if (!creature.isWalking() || !creature.m_fromPos) continue
+      
+      // Check if creature is within visible range
+      const fromPos = creature.m_fromPos
+      
+      // Only draw on current floor (z-matching)
+      if (fromPos.z !== pos.z) continue
+      
+      // Calculate view coordinates
+      const viewX = fromPos.x - pos.x + range.left
+      const viewY = fromPos.y - pos.y + range.top
+      
+      // Skip if out of view bounds
+      if (viewX < 0 || viewX >= this.w || viewY < 0 || viewY >= this.h) continue
+      
+      // Get walk offset in pixels
+      const off = creature.getWalkOffset()
+      
+      // Set draw order to THIRD (same as creatures in Tile.drawCreature)
+      this.pipeline.setDrawOrder(DrawOrder.THIRD)
+      
+      // Draw the creature with its walk offset
+      creature.draw(
+        this.pipeline,
+        viewX,
+        viewY,
+        0, 0,
+        fromPos.z,
+        off.x,
+        off.y,
+        true // isWalkDraw = true
+      )
+      
+      // Reset draw order
+      this.pipeline.resetDrawOrder()
+    }
   }
 
   resize(host) {

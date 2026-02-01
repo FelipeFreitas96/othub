@@ -213,66 +213,29 @@ export class Tile {
   /**
    * OTC: Tile::drawCreature(dest, flags, forceDraw, drawElevation, lightView)
    * 1) Non-walking creatures from m_things (skip if isWalking()).
-   * 2) setDrawOrder(THIRD); for (creature : m_walkingCreatures) draw at cDest = dest + (creature->getPosition() - m_position)*tileSize - getDrawElevation(); resetDrawOrder().
-   * 3) Local player on virtual tile fallback (stub).
+   * 2) Walking creatures are drawn separately by MapView._drawWalkingCreatures().
    */
   drawCreature(pipeline, drawFlags, forceDraw, state, steps) {
     if (!forceDraw && !this.m_drawTopAndCreature) return
     const { DrawCreatures } = DrawFlags
     if (!(drawFlags & DrawCreatures)) return
 
-    const walking = this.m_meta?.walkingCreatures ?? []
-    const walkingIds = new Set(
-      walking.map(wc => wc.entry?.creatureId ?? wc.entry?.id).filter(id => id != null).map(id => String(id))
-    )
-
+    // Draw only NON-walking creatures from m_things.
+    // Walking creatures are drawn separately by MapView._drawWalkingCreatures()
+    // to ensure they're always visible even if the snapshot is stale.
     for (const thing of this.m_things) {
       if (!thing.isCreature?.()) continue
       
-      // Obtém o ID único da criatura. 
+      // Get the unique creature ID
       const creatureId = thing.getId?.() ?? thing.m_entry?.creatureId ?? thing.m_entry?.id
       const known = g_map?.getCreatureById?.(creatureId)
       
-      // Se a criatura é conhecida e está andando (em qualquer lugar do mapa), 
-      // NÃO desenha a versão estática dela neste tile.
+      // If the creature is currently walking, skip it here.
+      // It will be drawn by MapView._drawWalkingCreatures() with the correct offset.
       if (known?.isWalking?.()) continue
-      
-      // Se ela está na lista de walking deste tile específico, também pula
-      if (creatureId != null && walkingIds.has(String(creatureId))) continue
       
       const creatureToDraw = known ?? thing
       this._drawThing(creatureToDraw, pipeline, drawFlags, state.drawElevationPx, steps, state)
-    }
-
-    // Desenha criaturas que estão "atravessando" este tile (walking)
-    if (walking.length) {
-      steps.push(() => pipeline.setDrawOrder(DrawOrder.THIRD))
-      for (const wc of walking) {
-        const creatureId = wc.entry?.creatureId ?? wc.entry?.id
-        const known = g_map?.getCreatureById?.(creatureId)
-        
-        // Se a criatura conhecida não está mais andando, ela deve ser desenhada
-        // apenas como um objeto estático no seu tile de destino (m_things).
-        if (known && !known.isWalking()) continue
-
-        // Usa a instância real para manter a animação fluida (passos, offsets)
-        const creatureToDraw = known ?? new Creature(wc.entry)
-        
-        const z = this.z
-        const drawX = state.drawX
-        const drawY = state.drawY
-        
-        // No OTClient, criaturas em movimento são desenhadas com seu offset real
-        // O offsetX/Y do snapshot serve como fallback caso a instância conhecida suma.
-        const off = (known && known.isWalking()) ? known.getWalkOffset() : { x: wc.offsetX, y: wc.offsetY }
-
-        steps.push(() => {
-          if (typeof creatureToDraw.draw === 'function') {
-            creatureToDraw.draw(pipeline, drawX, drawY, 0, 0, z, off.x, off.y)
-          }
-        })
-      }
-      steps.push(() => pipeline.resetDrawOrder())
     }
   }
 

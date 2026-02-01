@@ -6,8 +6,9 @@
  */
 
 import { Tile } from './Tile.js'
-import { g_things } from '../things/thingTypeManager.js'
+import { getThings } from '../protocol/things.js'
 import { g_map } from './ClientMap.js'
+import { isFeatureEnabled, getClientVersion } from '../protocol/features.js'
 
 const TILE_PIXELS = 32
 
@@ -91,17 +92,38 @@ export class Creature {
     this.m_fromPos = { ...fromPos }
     this.m_toPos = { ...toPos }
     this.m_direction = this.m_lastStepDirection
-    this.m_walking = true
-    this.m_startTime = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
     this.m_stepDuration = Creature.getStepDuration(this.m_entry, fromPos, toPos)
-    this.m_walkOffsetX = 0
-    this.m_walkOffsetY = 0
-    this.m_walkedPixels = 0
-    this.m_walkAnimationPhase = 0
-    this.m_footStep = 0
-    this.m_lastFootTime = 0
+
+    if (!this.m_walking) {
+      // Primeiro passo: inicializa tudo do zero
+      this.m_walking = true
+      this.m_startTime = now
+      this.m_walkedPixels = 0
+      this.m_walkOffsetX = 0
+      this.m_walkOffsetY = 0
+      this.m_walkAnimationPhase = 0
+      this.m_footStep = 0
+      this.m_lastFootTime = 0
+    } else {
+      // Passo contínuo (OTClient): Resetamos para 0 e deixamos a animação fluir normalmente.
+      // A continuidade visual vem do fato que o servidor já moveu o "centro" do mapa,
+      // então a posição base já está atualizada.
+      this.m_startTime = now
+      this.m_walkedPixels = 0
+      // NÃO resetamos m_walkAnimationPhase, m_footStep, m_lastFootTime para manter os passos fluidos
+      // Mas precisamos atualizar os offsets para zero no novo tile
+      this.m_walkOffsetX = 0
+      this.m_walkOffsetY = 0
+    }
+
     this.m_walkTurnDirection = DirInvalid
-    this.nextWalkUpdate(typeof performance !== 'undefined' ? performance.now() : Date.now())
+    
+    // Adiciona imediatamente ao walkingTile para evitar que a sprite suma
+    this.updateWalkingTile()
+    
+    this.nextWalkUpdate(now)
   }
 
   /** OTC: Creature::allowAppearWalk() – seta m_allowAppearWalk=true para desenhar animação de walk ao aparecer (parseCreatureMove). */
@@ -198,17 +220,32 @@ export class Creature {
    * OTC Creature::updateWalkAnimation() – foot animation phase (creature.cpp L416-442). OTC usa g_things para thing type.
    */
   updateWalkAnimation() {
-    const tt = g_things.getCreature?.(this.m_entry?.outfit?.lookType ?? this.m_entry?.lookType ?? 0)
-    const footAnimPhases = tt?.getAnimationPhases?.() ?? tt?.phases ?? 1
+    const lookType = this.m_entry?.outfit?.lookType ?? this.m_entry?.lookType ?? 0
+    // Usamos o singleton central de things para garantir que pegamos a instância carregada
+    const things = getThings()
+    const tt = things.types.getCreature(lookType)
+    const phases = tt?.getAnimationPhases?.() ?? tt?.phases ?? 1
+    const footAnimPhases = phases - 1 // Desconta a fase 'parado' (0)
+    
     if (footAnimPhases <= 0) return
     if (this.m_walkedPixels >= TILE_PIXELS) {
       this.m_walkAnimationPhase = 0
       return
     }
-    const footDelay = Math.max(20, Math.min(205, Math.floor((this.m_stepDuration ?? 300) / (footAnimPhases || 1))))
+
+    // Se a animação ainda não começou (fase 0), forçamos o início no primeiro passo
+    if (this.m_walkAnimationPhase === 0) {
+      this.m_walkAnimationPhase = 1
+      this.m_lastFootTime = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    }
+
+    // O delay de cada passo é a duração total dividida pelos passos disponíveis
+    const footDelay = Math.max(20, Math.min(205, Math.floor((this.m_stepDuration ?? 300) / footAnimPhases)))
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    
     if ((now - (this.m_lastFootTime ?? 0)) >= footDelay) {
-      this.m_walkAnimationPhase = this.m_walkAnimationPhase >= footAnimPhases ? 1 : (this.m_walkAnimationPhase + 1)
+      // Cicla entre 1 e o máximo de fases (ex: 1, 2, 1, 2...)
+      this.m_walkAnimationPhase = (this.m_walkAnimationPhase >= footAnimPhases) ? 1 : (this.m_walkAnimationPhase + 1)
       this.m_lastFootTime = now
     }
   }
@@ -219,18 +256,22 @@ export class Creature {
   updateWalk(now) {
     if (!this.m_walking || !this.m_fromPos || !this.m_toPos) return false
     const stepDuration = this.m_stepDuration || 300
-    const walkTicksPerPixel = stepDuration / TILE_PIXELS
     const elapsed = now - this.m_startTime
-    const totalPixelsWalked = Math.min(TILE_PIXELS, Math.floor(elapsed / walkTicksPerPixel))
-    this.m_walkedPixels = Math.max(this.m_walkedPixels, totalPixelsWalked)
+    
+    // Cálculo preciso de pixels baseado no tempo decorrido
+    const totalPixelsWalked = Math.min(TILE_PIXELS, Math.floor((elapsed * TILE_PIXELS) / stepDuration))
+    
+    this.m_walkedPixels = totalPixelsWalked
     const oldWalkOffset = { x: this.m_walkOffsetX, y: this.m_walkOffsetY }
     this.updateWalkAnimation()
     this.updateWalkOffset(this.m_walkedPixels)
     this.updateWalkingTile()
+    
     if (this.isCameraFollowing() && g_map?.notificateCameraMove && (oldWalkOffset.x !== this.m_walkOffsetX || oldWalkOffset.y !== this.m_walkOffsetY)) {
       g_map.notificateCameraMove(this.getWalkOffset())
     }
-    if (this.m_walkedPixels >= TILE_PIXELS) {
+    
+    if (elapsed >= stepDuration) {
       this.terminateWalk()
       return true
     }
@@ -370,12 +411,43 @@ export class Creature {
   static getStepDuration(entry, fromPos, toPos) {
     const speed = entry?.speed ?? 110
     if (speed < 1) return 0
-    const groundSpeed = 150
-    let interval = (1000 * groundSpeed) / speed
+
+    // OTC: Obtém a velocidade do chão (ground speed) do tile de origem.
+    // O atributo 'ground' no ThingType armazena a fricção/velocidade do piso.
+    let groundSpeed = 150
+    const tile = g_map.getTile(fromPos)
+    if (tile && tile.things) {
+      // O primeiro item de um tile geralmente é o ground
+      const groundItem = tile.things.find(t => t.isGround?.())
+      if (groundItem) {
+        const tt = groundItem.getThingType()
+        if (tt && tt.m_attribs.has(0)) { // 0 = ThingAttr.Ground
+          groundSpeed = tt.m_attribs.get(0)
+        }
+      }
+    }
+
+    let interval = 0
+    // Se o servidor enviou as constantes da nova lei de velocidade (Tibia 10.x+)
+    if (Creature.speedA !== 0 && isFeatureEnabled('GameNewSpeedLaw')) {
+      // New Speed Law: duration = (groundSpeed * speedA * log(speed + speedB) + speedC)
+      // No OTC: duration = Math.max(1, Math.floor(groundSpeed * speedA * log(speed + speedB) + speedC))
+      // Aqui simplificamos para bater com o comportamento observado
+      interval = Math.floor(Creature.speedA * Math.log(speed + Creature.speedB) + Creature.speedC)
+      interval = (interval * groundSpeed) / 100
+    } else {
+      // Lei de velocidade antiga (Tibia 8.6 e anteriores)
+      // duration = (1000 * groundSpeed) / speed
+      interval = (1000 * groundSpeed) / speed
+    }
+
     const dir = Creature.getDirectionFromPosition(fromPos, toPos)
     const diagonal = dir === DirNorthEast || dir === DirNorthWest || dir === DirSouthEast || dir === DirSouthWest
-    if (diagonal) interval *= 3
-    return Math.max(100, Math.floor(interval))
+    
+    // OTC: diagonal factor é 3 para versões novas (> 810), 2 para antigas.
+    if (diagonal) interval *= (getClientVersion() > 810 ? 3 : 2)
+
+    return Math.max(100, Math.floor(interval)) * 1.2
   }
 
   /**
@@ -390,10 +462,9 @@ export class Creature {
   static getWalkOffset(walkedPixels, direction) {
     let x = 0
     let y = 0
-    const offset = Math.min(TILE_PIXELS, Math.max(0, walkedPixels))
+    // O offset pode ser negativo no início de um novo passo se o anterior não terminou.
+    const offset = walkedPixels
     
-    // Norte: Y diminui no mundo. Sul: Y aumenta.
-    // Leste: X aumenta no mundo. Oeste: X diminui.
     if (direction === DirNorth || direction === DirNorthEast || direction === DirNorthWest) y = offset
     else if (direction === DirSouth || direction === DirSouthEast || direction === DirSouthWest) y = -offset
     
@@ -480,22 +551,18 @@ export class Creature {
   /**
    * OTC: Creature::draw(dest, scaleFactor, animate, lightView) → getThingType()->draw(dest, 0, xPattern, yPattern, zPattern, animationPhase, color, drawThings, lightView).
    * pixelOffsetX/Y: offset de walk em pixels (OTC: dest + animationOffset).
+   * isWalkDraw: indica se esta chamada vem da lista de walkingCreatures (true) ou dos m_things estáticos (false/undefined)
    */
-  draw(pipeline, tileX, tileY, drawElevationPx, zOff, tileZ, pixelOffsetX = 0, pixelOffsetY = 0) {
+  draw(pipeline, tileX, tileY, drawElevationPx, zOff, tileZ, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false) {
     const ct = this.getThingType(pipeline)
     if (!ct) return
     const things = pipeline.thingsRef?.current
     if (!things?.types) return
     
-    const hasExternalOffset = (pixelOffsetX !== 0 || pixelOffsetY !== 0)
-    const off = (this.m_walking && !hasExternalOffset) ? this.getWalkOffset() : { x: 0, y: 0 }
-    
-    // Se a criatura está andando, ela já está sendo desenhada pelo Tile.js 
-    // com o offset correto na lista de walkingCreatures.
-    // Se chegarmos aqui e m_walking for true, mas não houver offset externo,
-    // significa que estamos tentando desenhar a criatura como um Thing estático.
-    // No OTClient, criaturas em walk NÃO são desenhadas como Things estáticos.
-    if (this.m_walking && !hasExternalOffset) return
+    // Se a criatura está andando e NÃO estamos sendo chamados da lista de walkingCreatures,
+    // não desenha (ela será desenhada pelo código de walking).
+    // OTClient: criaturas em walk são desenhadas apenas via m_walkingCreatures, não via m_things.
+    if (this.m_walking && !isWalkDraw) return
 
     const dest = { 
       tileX, 
@@ -503,8 +570,8 @@ export class Creature {
       drawElevationPx, 
       zOff, 
       tileZ, 
-      pixelOffsetX: pixelOffsetX + off.x, 
-      pixelOffsetY: pixelOffsetY + off.y 
+      pixelOffsetX, 
+      pixelOffsetY 
     }
     const dir = this.m_walking ? this.m_direction : (this.m_entry?.direction ?? 0)
     const px = ct.patternX ?? ct.m_numPatternX ?? 1

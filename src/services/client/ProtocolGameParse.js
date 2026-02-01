@@ -628,7 +628,7 @@ export class ProtocolGameParse {
     if (statement > 0 && clientVersion >= 1281) msg.getU8()
     const level = messageLevel ? msg.getU16() : 0
     const messageByte = msg.getU8()
-    const mode = translateMessageModeFromServer(clientVersion, messageByte)
+    const mode = this.translateMessageModeFromServer(clientVersion, messageByte)
 
     let channelId = 0
     let pos = null
@@ -680,7 +680,7 @@ export class ProtocolGameParse {
   parseTextMessage(msg) {
     const clientVersion = g_game.getClientVersion()
     const code = msg.getU8()
-    const mode = translateMessageModeFromServer(clientVersion, code)
+    const mode = this.translateMessageModeFromServer(clientVersion, code)
     let text = ''
     const detail = { mode: code, text: '' }
 
@@ -838,10 +838,8 @@ export class ProtocolGameParse {
     // 3) Inicia o walk na instância persistente
     if (creature) {
       creature.allowAppearWalk()
-      // Se a criatura já está andando, não reinicia o walk para evitar duplicidade de offset
-      if (!creature.isWalking()) {
-        creature.walk(ref.fromPos, newPos, g_map)
-      }
+      // OTClient: Sempre chama walk() - a lógica de continuidade está dentro de walk()
+      creature.walk(ref.fromPos, newPos)
       if (creature.isCameraFollowing()) {
         g_map.notificateCameraMove(creature.getWalkOffset())
       }
@@ -1278,9 +1276,8 @@ export class ProtocolGameParse {
           const creature = g_map.getCreatureById(playerId)
           if (creature) {
             creature.allowAppearWalk()
-            if (!creature.isWalking()) {
-              creature.walk(oldPos, pos)
-            }
+            // OTClient: Sempre chama walk() - a lógica de continuidade está dentro de walk()
+            creature.walk(oldPos, pos)
             // OTC: if isFollowingCreature() notificateCameraMove
             if (creature.isCameraFollowing()) {
               g_map.notificateCameraMove(creature.getWalkOffset())

@@ -54,24 +54,46 @@ export default function GameMapPanel() {
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
+    const keysHeld = new Set()
+
     const onKeyDown = (e) => {
-      const opcode = WASD_TO_MOVE[e.code]
-      if (opcode == null) return
-      if (!localPlayer.canWalk()) return
-      e.preventDefault()
-      if (isFeatureEnabled('GameAllowPreWalk')) {
-        const dir = OPCODE_TO_DIRECTION[opcode]
-        if (dir != null) localPlayer.preWalk(dir,)
+      if (WASD_TO_MOVE[e.code]) {
+        keysHeld.add(e.code)
+        e.preventDefault()
       }
-      sendMove(opcode)
+    }
+
+    const onKeyUp = (e) => {
+      if (WASD_TO_MOVE[e.code]) {
+        keysHeld.delete(e.code)
+        e.preventDefault()
+      }
+    }
+
+    const processMovement = () => {
+      if (keysHeld.size === 0) return
+
+      // Pega a última tecla pressionada (ou a primeira do Set)
+      const lastKey = Array.from(keysHeld).pop()
+      const opcode = WASD_TO_MOVE[lastKey]
+      
+      if (opcode != null && localPlayer.canWalk()) {
+        if (isFeatureEnabled('GameAllowPreWalk')) {
+          const dir = OPCODE_TO_DIRECTION[opcode]
+          if (dir != null) localPlayer.preWalk(dir)
+        }
+        sendMove(opcode)
+      }
     }
 
     window.addEventListener('ot:map', onMap)
     window.addEventListener('ot:mapMove', onMapMove)
     window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
 
     let raf = 0
     const loop = () => {
+      processMovement()
       if (mapViewRef.current) {
         mapViewRef.current.draw()
         mapViewRef.current.render()

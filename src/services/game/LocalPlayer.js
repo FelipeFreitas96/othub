@@ -125,20 +125,18 @@ export class LocalPlayer {
     if (this.isDead()) return false
     if (this.isWalkLocked() && !ignoreLock) return false
 
-    const maxSteps = this.getWalkMaxSteps()
-    if (maxSteps > 0) {
-      if (this.m_preWalks.length > maxSteps) return false
-    } else if (!positionEquals(this.getPosition(), this.getServerPosition())) {
-      return false
-    }
+    // OTC: Permite enfileirar até 2 pre-walks para garantir fluidez (estilo WASD)
+    const maxSteps = this.getWalkMaxSteps() || 2
+    if (this.m_preWalks.length >= maxSteps) return false
 
-    if (this.isWalking()) {
-      if (this.isAutoWalking()) return true
-      if (this.isPreWalking()) return false
-    }
-
+    // Se estiver andando (animação em curso), só permite o próximo passo se 
+    // já tiver passado tempo suficiente para o "próximo" passo lógico.
     const elapsed = this.m_walkTimerStart > 0 ? clockMillis() - this.m_walkTimerStart : 999999
-    return elapsed >= this.getStepDuration()
+    const stepDuration = this.getStepDuration()
+    
+    // No OTC, você pode iniciar o próximo passo um pouco antes do anterior terminar visualmente
+    // para compensar o ping e manter a fluidez.
+    return elapsed >= stepDuration * 0.9
   }
 
   /** OTC: g_game.getWalkMaxSteps() – 0 = sync by position only. */
@@ -152,8 +150,16 @@ export class LocalPlayer {
 
   /** OTC: Creature::getStepDuration() – used for canWalk step-done check. */
   getStepDuration() {
-    const center = g_map?.center ?? {}
-    return Creature.getStepDuration(this.getCreature() ?? {}, center, center)
+    const id = this.getId()
+    const creature = g_map?.getCreatureById?.(id)
+    const entry = creature?.m_entry ?? this.getCreature() ?? {}
+    
+    // Tenta obter a direção real do próximo passo se houver preWalk
+    // No OTC, a duração do passo depende do tile onde você ESTÁ (fromPos)
+    const fromPos = this.getServerPosition()
+    const toPos = this.m_preWalks.length ? this.m_preWalks[0] : fromPos
+    
+    return Creature.getStepDuration(entry, fromPos, toPos)
   }
 
   /** OTC: preWalk(Otc::Direction direction) – m_preWalks.emplace_back(oldPos.translatedToDirection(direction)); Creature::walk(oldPos, back); registerAdjustInvalidPosEvent(). */
