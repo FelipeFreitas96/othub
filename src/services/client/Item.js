@@ -22,6 +22,10 @@ export class Item {
   isCreature() { return false }
   getWidth() { return this.m_thingType?.getWidth?.() ?? this.m_thingType?.width ?? 1 }
   getHeight() { return this.m_thingType?.getHeight?.() ?? this.m_thingType?.height ?? 1 }
+  /** OTC ThingType::isSingleGround() – isGround() && isSingleDimension() (size.area() == 1). */
+  isSingleGround() { return this.isGround() && this.getWidth() === 1 && this.getHeight() === 1 }
+  /** OTC ThingType::isSingleGroundBorder() – isGroundBorder() && isSingleDimension(). */
+  isSingleGroundBorder() { return this.isGroundBorder() && this.getWidth() === 1 && this.getHeight() === 1 }
 
   /**
    * OTC: Item::calculatePatterns(xPattern, yPattern, zPattern)

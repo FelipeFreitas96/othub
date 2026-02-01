@@ -1,11 +1,12 @@
-import { useState, useCallback } from 'react'
-import { GameProvider, useGame } from './game'
-import { GameTextMessageProvider } from './components/modules/game_textmessage'
-import { CharacterList } from './components/modules/character_list'
-import { EnterGame } from './components/modules/entergame'
-import ClientBackground from './components/ClientBackground'
-import GameInterface from './components/GameInterface'
-import { login } from './services/protocol/loginProtocol'
+import { useState, useCallback, useEffect } from "react";
+import { GameTextMessageProvider } from "./components/modules/game_textmessage";
+import { CharacterList } from "./components/modules/character_list";
+import { EnterGame } from "./components/modules/entergame";
+import ClientBackground from "./components/ClientBackground";
+import GameInterface from "./components/GameInterface";
+import { login } from "./services/protocol/loginProtocol";
+import { g_game } from './services/client/Game';
+import { GameEventsEnum } from "./services/client/Const";
 
 /**
  * OTClient Web UI - Fluxo de início
@@ -15,25 +16,36 @@ import { login } from './services/protocol/loginProtocol'
  * - game_interface: layout do jogo — visível após entrar no jogo
  */
 function AppContent() {
-  const [gameStarted, setGameStarted] = useState(false)
-  const [characters, setCharacters] = useState(null)
-  const { startGame, setClientVersion } = useGame()
+  const [gameStarted, setGameStarted] = useState(false);
+  const [characters, setCharacters] = useState(null);
 
-  const handleLoginSuccess = useCallback((list, clientVersion) => {
-    setClientVersion?.(clientVersion)
-    setCharacters(list)
-  }, [setClientVersion])
+  useEffect(() => {
+    const onLogin = () => {
+      console.log('AppContent: g_game:onGameStart event received');
+      setGameStarted(true);
+    };
+    const unsub = g_game.connect(GameEventsEnum.onGameStart, onLogin);
+    return () => unsub();
+  }, []);
+
+  const handleLoginSuccess = useCallback(
+    (list, clientVersion) => {
+      g_game.setClientVersion(clientVersion);
+      setCharacters(list);
+    },
+    []
+  );
 
   const handleCharacterListBack = useCallback(() => {
-    setCharacters(null)
-  }, [])
+    setCharacters(null);
+  }, []);
 
   if (gameStarted) {
     return (
       <div className="w-full h-full">
         <GameInterface />
       </div>
-    )
+    );
   }
 
   if (characters !== null) {
@@ -42,15 +54,15 @@ function AppContent() {
         <ClientBackground />
         <CharacterList
           characters={characters}
-          onGameStart={(player) => {
-            startGame(player)
-            setGameStarted(true)
-            setCharacters(null)
+          onGameStart={async (player) => {
+            console.log('AppContent: onGameStart triggered for player:', player.name);
+            setGameStarted(true);
+            setCharacters(null);
           }}
           onBack={handleCharacterListBack}
         />
       </div>
-    )
+    );
   }
 
   return (
@@ -58,17 +70,15 @@ function AppContent() {
       <ClientBackground />
       <EnterGame onLogin={login} onLoginSuccess={handleLoginSuccess} />
     </div>
-  )
+  );
 }
 
 function App() {
   return (
-    <GameProvider>
-      <GameTextMessageProvider>
-        <AppContent />
-      </GameTextMessageProvider>
-    </GameProvider>
-  )
+    <GameTextMessageProvider>
+      <AppContent />
+    </GameTextMessageProvider>
+  );
 }
 
-export default App
+export default App;

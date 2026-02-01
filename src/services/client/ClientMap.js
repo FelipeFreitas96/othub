@@ -5,17 +5,17 @@
  * Walk: delegado à Creature (OTC: estado de walk fica na Creature).
  * View state: construído via getTile (OTC: MapView usa map.getTile).
  */
-import { Creature } from '../things/Creature.js'
+import { Creature } from './Creature.js'
 import { localPlayer } from '../game/LocalPlayer.js'
-import { Tile } from '../render/Tile.js'
-import { g_drawPool } from '../render/DrawPoolManager.js'
-import { DrawPoolType } from '../render/DrawPool.js'
+import { Tile } from './Tile.js'
+import { g_drawPool } from '../graphics/DrawPoolManager.js'
+import { DrawPoolType } from '../graphics/DrawPool.js'
 
 const SEA_FLOOR = 7
 const MAX_Z = 15
 const AWARE_UNDEGROUND_FLOOR_RANGE = 2
 
-export class MapStore {
+export class ClientMap {
   constructor() {
     this.m_centralPosition = { x: 0, y: 0, z: SEA_FLOOR }
     this.m_tiles = new Map()
@@ -372,14 +372,4 @@ export class MapStore {
 }
 
 /** Singleton: instância única do mapa (OTC: g_map). */
-const mapStoreInstance = new MapStore()
-
-// OTC: quando Creature::terminateWalk() chama map.notificateWalkTerminated(this), o LocalPlayer recebe (m_serverWalk = false etc.)
-mapStoreInstance.notificateWalkTerminated = (creature) => {
-  if (creature && localPlayer.isLocalPlayer(creature.getId?.())) localPlayer.terminateWalk()
-}
-
-export function getMapStore() {
-  return mapStoreInstance
-}
-
+export const g_map = new ClientMap()

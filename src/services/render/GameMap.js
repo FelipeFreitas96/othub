@@ -1,5 +1,5 @@
-import { Tile } from './Tile.js'
-import { DEFAULT_DRAW_FLAGS } from './drawFlags.js'
+import { Tile } from '../client/Tile.js'
+import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags.js'
 
 export class GameMap {
   constructor() {

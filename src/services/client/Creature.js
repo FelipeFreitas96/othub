@@ -5,8 +5,8 @@
  * Types: OTC usa g_things (ThingTypeManager) global; aqui importamos g_things.
  */
 
-import { Tile } from '../render/Tile.js'
-import { g_things } from './thingTypeManager.js'
+import { Tile } from './Tile.js'
+import { g_things } from '../things/thingTypeManager.js'
 
 const TILE_PIXELS = 32
 

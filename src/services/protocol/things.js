@@ -1,5 +1,5 @@
-import { ThingTypeManager } from './thingTypeManager.js'
-import { SpriteManager } from './spriteManager.js'
+import { ThingTypeManager } from '../things/thingTypeManager.js'
+import { SpriteManager } from '../things/spriteManager.js'
 
 let singleton = null
 export function getThings() {

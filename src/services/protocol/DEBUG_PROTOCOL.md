@@ -13,6 +13,28 @@ Muitos servidores OT/TFS **não usam** os opcodes 101–104 (0x65–0x68) na res
 
 Este cliente suporta **os dois**: se chegar 0x64 após andar, o mapa e o walk são atualizados; se chegar 101–104, idem. Se ao andar não aparecer **nenhum** log de `receive` (nem 0x64 nem 101–104), o problema é a resposta não chegar (conexão, bridge ou servidor não enviando).
 
+## Debug de "Connection closed" (login / disconnect)
+
+Quando o servidor fecha a conexão após o login, o console mostra `[ProtocolGame] onDisconnect:` com o **reason** e um resumo:
+
+- **loginSent** – se o pacote de login já foi enviado
+- **gameInitialized** – se o jogo já entrou (LoginSuccess/EnterGame)
+- **lastRecvOpcode** – último opcode recebido (ex.: `0x14` = 20 = LoginError; `0x1f` = 31 = Challenge)
+
+Para ver **cada pacote** enviado e recebido (tamanho + primeiros bytes em hex), no console:
+
+```js
+__otDebugConnection = true
+```
+
+Depois recarregue e tente logar de novo. Você verá:
+
+- `[ProtocolGame] sendLoginPacket N bytes (hex...)` – pacote de login enviado
+- `[ProtocolGame] recv N bytes, opcode=0x??` – cada pacote recebido do servidor
+- `[Connection] disconnect from backend: {...}` – mensagem exata que o bridge enviou ao fechar
+
+Se **lastRecvOpcode** for `0x14` (20), o servidor enviou **LoginError** antes de fechar; a mensagem de erro deve aparecer na UI. Se for `null` ou outro valor, o servidor pode ter fechado sem enviar opcode (ex.: falha ao descriptografar, versão incompatível).
+
 ## Ativar logs no console
 
 **Opção 1 – URL**  

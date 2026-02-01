@@ -34,6 +34,11 @@ export class Connection {
         this.xteaEnabled = true
     }
 
+    /** OTC: enableSequencedPackets() – sequenced packets after login. */
+    enableSequencedPackets() {
+        this.sequencedPacketsEnabled = true
+    }
+
     disableXtea() {
         this.xteaKey = null
         this.xteaEnabled = false
@@ -127,8 +132,12 @@ export class Connection {
                 const wasConnected = this.connected || this.connecting
                 this.connected = false
                 this.connecting = false
+                const detail = { reason: message.reason || 'Connection closed', ...message }
+                if (typeof window !== 'undefined' && window.__otDebugConnection) {
+                    console.warn('[Connection] disconnect from backend:', JSON.stringify(message))
+                }
                 if (wasConnected) {
-                    this.emit('disconnect', { reason: message.reason || 'Connection closed' })
+                    this.emit('disconnect', detail)
                 }
                 return
             }
@@ -308,6 +317,7 @@ export class Connection {
                 }, 10000) // 10 second timeout
 
                 const connectHandler = () => {
+                    console.log("Connection: connect event received, connected successfully");
                     clearTimeout(timeout)
                     this.off('connect', connectHandler)
                     this.off('error', errorHandler)
@@ -315,6 +325,7 @@ export class Connection {
                 }
 
                 const errorHandler = (error) => {
+                    console.log("Connection: error event received, connection failed");
                     clearTimeout(timeout)
                     this.off('connect', connectHandler)
                     this.off('error', errorHandler)

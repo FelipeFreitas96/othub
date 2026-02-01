@@ -4,7 +4,7 @@
  */
 import { useState } from 'react'
 import CharacterListWindow from './ui/CharacterListWindow'
-import { loginWorld } from '../../../services/protocol/gameProtocol'
+import { g_game } from '../../../services/client/Game.js'
 
 export default function CharacterList({ characters, onGameStart, onBack }) {
   const [loading, setLoading] = useState(false)
@@ -16,7 +16,7 @@ export default function CharacterList({ characters, onGameStart, onBack }) {
     setLoading(true)
     setError(null)
     try {
-      const result = await loginWorld({
+      const result = await g_game.loginWorld({
         worldName: selected.worldName || selected.world,
         worldHost: selected.worldIp,
         worldPort: selected.worldPort,

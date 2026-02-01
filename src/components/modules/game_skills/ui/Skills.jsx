@@ -17,7 +17,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import MiniWindow from '../../../ui/MiniWindow'
 import { useWindowVisibility } from '../../../../hooks/useWindowVisibility'
-import { useGame } from '../../../../game'
+import { g_game } from '../../../../services/client/Game';  
 import { useSkillsGameState } from '../hooks/useSkillsGameState'
 import SkillRow from './SkillRow'
 import SkillsMenu from './SkillsMenu'
@@ -54,14 +54,13 @@ export default function Skills(props) {
   const [menuAnchor, setMenuAnchor] = useState(null)
   const { showMessage } = useGameTextMessage()
 
-  const game = useGame()
   const {
     isOnline,
     refresh,
     online,
     offline,
     getRowDisplayFor,
-  } = useSkillsGameState({ game: game ?? undefined, initialOnline: false })
+  } = useSkillsGameState({ game: g_game, initialOnline: false })
 
   const openRef = useRef(open)
   const onOpenChangeRef = useRef(onOpenChange)
@@ -83,12 +82,11 @@ export default function Skills(props) {
 
     window.addEventListener('keydown', handleKeyDown)
 
-    const g_game = game?.g_game
     let unsubStart
     let unsubEnd
     if (g_game) {
-      unsubStart = g_game.connect(g_game.EVENTS.onGameStart, () => { online(); refresh() })
-      unsubEnd = g_game.connect(g_game.EVENTS.onGameEnd, offline)
+      unsubStart = g_game.connect(GameEventsEnum.onGameStart, () => { online(); refresh() })
+      unsubEnd = g_game.connect(GameEventsEnum.onGameEnd, offline)
       if (g_game.isOnline()) refresh()
     } else {
       online()
@@ -102,7 +100,7 @@ export default function Skills(props) {
       if (typeof unsubEnd === 'function') unsubEnd()
       if (!g_game) offline()
     }
-  }, [game, online, offline, refresh])
+  }, [online, offline, refresh])
 
   const onToggle = useCallback(
     (key) => {

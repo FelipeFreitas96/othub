@@ -1,15 +1,17 @@
 /**
  * LocalPlayer – 1:1 port of OTClient src/client/localplayer.h + localplayer.cpp
- * Copyright (c) 2010-2020 OTClient; ported to JS for this project.
+ * Copyright (c) 2010-2026 OTClient <https://github.com/edubart/otclient>; ported to JS.
  *
- * Walk: lockWalk, canWalk, preWalk, walk (server confirm), cancelWalk, stopWalk.
- * AutoWalk: stopAutoWalk, autoWalk (stub; pathfind not ported).
- * State/skills/health/mana etc. setters and getters.
+ * OTC: walk related: m_preWalks (deque), m_serverWalk, m_autoWalkDestination, m_walkLockExpiration.
+ * preWalk: m_preWalks.emplace_back(oldPos.translatedToDirection(direction)); Creature::walk(oldPos, back); registerAdjustInvalidPosEvent().
+ * walk: if (isPreWalking() && newPos == m_preWalks.front()) { m_preWalks.pop_front(); return; } cancelAdjustInvalidPosEvent(); m_preWalks.clear(); m_serverWalk = true; Creature::walk(oldPos, newPos).
+ * cancelWalk: if (isWalking() && isPreWalking()) stopWalk(); lockWalk(); retryAutoWalk(); setDirection(direction).
+ * terminateWalk: Creature::terminateWalk(); m_serverWalk = false.
  */
-import { Creature } from '../things/Creature.js'
-import { getMapStore } from '../protocol/mapStore.js'
+import { Creature } from '../client/Creature.js'
+import { g_map } from '../client/ClientMap.js'
+import { Tile } from '../client/Tile.js'
 
-const PREWALK_TIMEOUT = 1000
 const DirInvalid = -1
 
 function clockMillis() {
@@ -57,21 +59,23 @@ export class LocalPlayer {
     this.m_offlineTrainingTime = -1
     this.m_totalCapacity = -1
 
-    this.m_lastPrewalkDestination = null
-    this.m_autoWalkDestination = null
+    // OTC: std::deque<Position> m_preWalks; Position m_lastAutoWalkPosition; Position m_autoWalkDestination
+    this.m_preWalks = []
     this.m_lastAutoWalkPosition = null
-    this.m_serverWalkEndEvent = null
+    this.m_autoWalkDestination = null
+    this.m_adjustInvalidPosEvent = null
     this.m_autoWalkContinueEvent = null
-    this.m_preWalking = false
-    this.m_lastPrewalkDone = true
-    this.m_secondPreWalk = false
-    this.m_serverWalking = false
+    this.m_serverWalkEndEvent = null
     this.m_knownCompletePath = false
+    this.m_autoWalkRetries = 0
     this.m_premium = false
     this.m_known = false
     this.m_pending = false
+    this.m_serverWalk = false
     this.m_inventoryItems = {}
     this.m_idleTimer = 0
+    // OTC: LocalPlayer extends Creature → m_walkTimer; we use m_walkTimerStart (ms) and restart on each step
+    this.m_walkTimerStart = 0
   }
 
   getId() {
@@ -105,83 +109,125 @@ export class LocalPlayer {
     this.m_walkLockExpiration = Math.max(this.m_walkLockExpiration, clockMillis() + millis)
   }
 
-  canWalk(mapStore, direction = DirInvalid) {
-    if (!mapStore) return false
-    const id = this.getId()
-    if (id == null) return false
-    const now = clockMillis()
-
-    if (this.m_walkLockExpiration !== 0 && now < this.m_walkLockExpiration) return false
-
-    const creature = mapStore.getCreature?.(id)
-    const entry = creature?.m_entry ?? this.getCreature() ?? {}
-    if ((entry.speed ?? 110) === 0) return false
-
-    const stepDuration = creature?.m_stepDuration ?? Creature.getStepDuration(entry, mapStore.center, mapStore.center)
-    const elapsed = creature?.m_walking ? now - (creature.m_startTime ?? 0) : 0
-    const walkNotDone = creature?.m_walking && elapsed < stepDuration
-    const prewalkTimeouted = creature?.m_walking && this.m_preWalking && elapsed >= stepDuration + PREWALK_TIMEOUT
-
-    if (walkNotDone && !this.isAutoWalking()) return false
-    if (!this.m_lastPrewalkDone && this.m_preWalking && !prewalkTimeouted) return false
-    if (creature?.m_walking && !this.isAutoWalking() && (!prewalkTimeouted || this.m_secondPreWalk)) return false
-
-    return true
+  /** OTC: getPosition() override – isPreWalking() ? m_preWalks.back() : m_position (center). */
+  getPosition() {
+    if (this.isPreWalking() && this.m_preWalks.length) return { ...this.m_preWalks[this.m_preWalks.length - 1] }
+    return g_map?.center ? { ...g_map.center } : {}
   }
 
+  /** OTC: isWalkLocked() */
+  isWalkLocked() {
+    return this.m_walkLockExpiration !== 0 && clockMillis() < this.m_walkLockExpiration
+  }
+
+  /** OTC: LocalPlayer::canWalk(bool ignoreLock) – localplayer.cpp 1:1. */
+  canWalk(ignoreLock = false) {
+    if (this.isDead()) return false
+    if (this.isWalkLocked() && !ignoreLock) return false
+
+    const maxSteps = this.getWalkMaxSteps()
+    if (maxSteps > 0) {
+      if (this.m_preWalks.length > maxSteps) return false
+    } else if (!positionEquals(this.getPosition(), this.getServerPosition())) {
+      return false
+    }
+
+    if (this.isWalking()) {
+      if (this.isAutoWalking()) return true
+      if (this.isPreWalking()) return false
+    }
+
+    const elapsed = this.m_walkTimerStart > 0 ? clockMillis() - this.m_walkTimerStart : 999999
+    return elapsed >= this.getStepDuration()
+  }
+
+  /** OTC: g_game.getWalkMaxSteps() – 0 = sync by position only. */
+  getWalkMaxSteps() {
+    return 0
+  }
+
+  getServerPosition() {
+    return g_map?.center ? { ...g_map.center } : {}
+  }
+
+  /** OTC: Creature::getStepDuration() – used for canWalk step-done check. */
+  getStepDuration() {
+    const center = g_map?.center ?? {}
+    return Creature.getStepDuration(this.getCreature() ?? {}, center, center)
+  }
+
+  /** OTC: preWalk(Otc::Direction direction) – m_preWalks.emplace_back(oldPos.translatedToDirection(direction)); Creature::walk(oldPos, back); registerAdjustInvalidPosEvent(). */
   preWalk(direction) {
-    const mapStore = getMapStore()
-    if (!mapStore) return
     const id = this.getId()
     if (id == null) return
-    const pos = { ...mapStore.center }
-    const newPos = Creature.positionTranslatedToDirection(pos, direction)
+    const oldPos = this.getPosition()
+    const newPos = Creature.positionTranslatedToDirection(oldPos, direction)
     if (!positionIsValid(newPos)) return
-
-    if (this.m_preWalking) {
-      this.m_secondPreWalk = true
-      return
-    }
-
-    this.m_preWalking = true
-    if (this.m_serverWalkEndEvent) {
-      clearTimeout(this.m_serverWalkEndEvent)
-      this.m_serverWalkEndEvent = null
-    }
-    this.m_lastPrewalkDone = false
-    this.m_lastPrewalkDestination = { ...newPos }
-    let creature = mapStore.getCreatureById?.(id)
+    this.m_preWalks.push(newPos)
+    let creature = g_map.getCreatureById?.(id)
     if (!creature) {
       creature = new Creature({ ...(this.getCreature() ?? {}), creatureId: id, id })
-      mapStore.addCreature?.(creature)
+      g_map.addCreature?.(creature)
     }
-    creature.walk(pos, newPos)
+    creature.m_cameraFollowing = true
+    creature._onTerminateWalk = () => this.terminateWalk()
+    creature.walk(oldPos, newPos, () => this.m_thingsRef?.current?.types ?? null)
+    this.m_walkTimerStart = clockMillis()
+    this.registerAdjustInvalidPosEvent()
   }
 
+  /** OTC: walk(oldPos, newPos) – if (isPreWalking() && newPos == m_preWalks.front()) pop_front; return; cancelAdjustInvalidPosEvent(); m_preWalks.clear(); m_serverWalk = true; Creature::walk(oldPos, newPos). */
   walk(oldPos, newPos, mapStore) {
     if (!mapStore) return
     const id = this.getId()
     if (id == null) return
-
-    if (this.m_preWalking) {
-      this.m_preWalking = false
-      this.m_secondPreWalk = false
-      this.m_lastPrewalkDone = true
-      if (!positionEquals(newPos, this.m_lastPrewalkDestination)) {
-        this._doWalk(mapStore, id, oldPos, newPos)
-      }
+    this.m_autoWalkRetries = 0
+    if (this.isPreWalking() && this.m_preWalks.length && positionEquals(newPos, this.m_preWalks[0])) {
+      this.m_preWalks.shift()
       return
     }
-
-    this.m_serverWalking = true
-    if (this.m_serverWalkEndEvent) {
-      clearTimeout(this.m_serverWalkEndEvent)
-      this.m_serverWalkEndEvent = null
-    }
+    this.cancelAdjustInvalidPosEvent()
+    this.m_preWalks = []
+    this.m_serverWalk = true
     this._doWalk(mapStore, id, oldPos, newPos)
   }
 
-  /** Atualiza tiles (remove de fromPos, adiciona em toPos) e chama creature.walk. OTC: tile update no protocol/game; walk na Creature. */
+  /** OTC: registerAdjustInvalidPosEvent() – schedule clear m_preWalks after stepDuration + ping + 100 (max 1000). */
+  registerAdjustInvalidPosEvent(mapStore) {
+    this.cancelAdjustInvalidPosEvent()
+    const creature = mapStore?.getCreatureById?.(this.getId())
+    const stepDuration = creature?.m_stepDuration ?? 300
+    const delay = Math.min(Math.max(stepDuration, 100) + 100, 1000)
+    this.m_adjustInvalidPosEvent = setTimeout(() => {
+      this.m_preWalks = []
+      this.m_adjustInvalidPosEvent = null
+    }, delay)
+  }
+
+  cancelAdjustInvalidPosEvent() {
+    if (!this.m_adjustInvalidPosEvent) return
+    clearTimeout(this.m_adjustInvalidPosEvent)
+    this.m_adjustInvalidPosEvent = null
+  }
+
+  /** OTC: retryAutoWalk() – if m_autoWalkDestination, schedule autoWalk in 200ms, m_autoWalkRetries++; return true (max 3). */
+  retryAutoWalk() {
+    if (!positionIsValid(this.m_autoWalkDestination)) return false
+    if (this.m_autoWalkRetries <= 3) {
+      if (this.m_autoWalkContinueEvent) clearTimeout(this.m_autoWalkContinueEvent)
+      const dest = { ...this.m_autoWalkDestination }
+      this.m_autoWalkContinueEvent = setTimeout(() => {
+        this.m_autoWalkContinueEvent = null
+        this.autoWalk(dest)
+      }, 200)
+      this.m_autoWalkRetries += 1
+      return true
+    }
+    this.m_autoWalkDestination = null
+    return false
+  }
+
+  /** OTC: criatura fica no tile antigo durante o walk; só move para toPos quando a animação termina (Creature.terminateWalk). */
   _doWalk(mapStore, creatureId, fromPos, toPos) {
     if (fromPos.x === toPos.x && fromPos.y === toPos.y && fromPos.z === toPos.z) return
     let creature = mapStore.getCreatureById(creatureId)
@@ -191,53 +237,28 @@ export class LocalPlayer {
     } else {
       creature.m_entry = { ...creature.m_entry, ...(this.getCreature() ?? {}) }
     }
-    const found = mapStore.findCreaturePosition(creatureId)
-    if (found?.pos && found.stackPos != null) {
-      mapStore.removeThingByPos(found.pos, found.stackPos)
-    }
-    const dir = Creature.getDirectionFromPosition(fromPos, toPos)
-    const entry = creature.m_entry || {}
-    const thing = {
-      kind: 'creature',
-      creatureId,
-      id: entry.outfit?.lookType ?? entry.lookType ?? 0,
-      outfit: entry.outfit ?? null,
-      direction: dir,
-      name: entry.name ?? '',
-    }
-    mapStore.addThing(thing, toPos)
-    creature.walk(fromPos, toPos)
+    creature.m_cameraFollowing = true
+    creature.walk(fromPos, toPos, mapStore)
+    this.m_walkTimerStart = clockMillis()
   }
 
+  /** OTC: cancelWalk(Otc::Direction) – if (isWalking() && isPreWalking()) stopWalk(); lockWalk(); retryAutoWalk(); setDirection(direction); callLuaField("onCancelWalk"). */
   cancelWalk(direction = DirInvalid) {
-    const mapStore = typeof window !== 'undefined' ? window.__otMapStore : null
-    if (this.m_preWalking && mapStore) {
+    if (this.isWalking?.() && this.isPreWalking()) {
       const id = this.getId()
-      const creature = id != null ? mapStore.getCreatureById(id) : null
+      const creature = g_map.getCreatureById(id)
       if (creature) creature.stopWalk()
-      this.stopWalk()
     }
-    this.m_lastPrewalkDone = true
+    this.m_preWalks = []
+    this.cancelAdjustInvalidPosEvent()
     this.m_idleTimer = clockMillis()
     this.lockWalk()
-    if (this.m_autoWalkDestination && positionIsValid(this.m_autoWalkDestination)) {
-      if (this.m_autoWalkContinueEvent) {
-        clearTimeout(this.m_autoWalkContinueEvent)
-        this.m_autoWalkContinueEvent = null
-      }
-      const self = this
-      const dest = { ...this.m_autoWalkDestination }
-      this.m_autoWalkContinueEvent = setTimeout(() => {
-        self.m_autoWalkContinueEvent = null
-        const ms = typeof window !== 'undefined' ? window.__otMapStore : null
-        if (positionIsValid(dest)) self.autoWalk(dest, ms)
-      }, 500)
-    }
-    if (direction !== DirInvalid) {
-      this.setDirection?.(direction)
-    }
+    if (this.retryAutoWalk()) return
+    if (direction !== DirInvalid) this.setDirection?.(direction)
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('onCancelWalk', { detail: direction }))
   }
 
+  /** OTC: stopAutoWalk() */
   stopAutoWalk() {
     this.m_autoWalkDestination = null
     this.m_lastAutoWalkPosition = null
@@ -248,59 +269,56 @@ export class LocalPlayer {
     }
   }
 
+  /** OTC: autoWalk(destination, retry) – reset state; m_autoWalkDestination = destination; g_map.findPathAsync(...); lockWalk() if !retry. */
   autoWalk(destination, mapStore) {
+    this.m_autoWalkDestination = null
+    this.m_lastAutoWalkPosition = null
+    if (this.m_autoWalkContinueEvent) {
+      clearTimeout(this.m_autoWalkContinueEvent)
+      this.m_autoWalkContinueEvent = null
+    }
     if (!mapStore || !positionIsValid(destination)) return false
     if (positionEquals(destination, mapStore.center)) return true
-    this.stopAutoWalk()
     this.m_autoWalkDestination = { ...destination }
+    this.lockWalk()
     return true
   }
 
+  /** OTC: Creature::stopWalk() – only on creature; LocalPlayer has no stopWalk state beyond creature. */
   stopWalk() {
-    const mapStore = typeof window !== 'undefined' ? window.__otMapStore : null
     const id = this.getId()
-    const creature = mapStore && id != null ? mapStore.getCreatureById(id) : null
+    const creature = g_map.getCreatureById(id)
     if (creature) creature.stopWalk()
-    this.m_lastPrewalkDone = true
-    this.m_lastPrewalkDestination = null
+    this.m_preWalks = []
   }
 
-  updateWalk(mapStore) {
-    const id = this.getId()
-    if (!mapStore || id == null) return
-    const creature = mapStore.getCreature?.(id)
-    if (!creature?.m_walking) return
-    const thingsRef = typeof window !== 'undefined' && window.__otThingsRef ? window.__otThingsRef.current : null
-    const now = clockMillis()
-    mapStore.updateWalk(now, thingsRef)
-  }
+  /** OTC: não existe LocalPlayer::updateWalk que chama map – cada Creature agenda seu nextWalkUpdate. */
 
+  /** OTC: terminateWalk() – Creature::terminateWalk(); m_serverWalk = false; callLuaField("onWalkFinish"). */
   terminateWalk() {
-    this.m_preWalking = false
-    this.m_secondPreWalk = false
+    this.m_serverWalk = false
     this.m_idleTimer = clockMillis()
-    if (this.m_serverWalking) {
-      if (this.m_serverWalkEndEvent) {
-        clearTimeout(this.m_serverWalkEndEvent)
-        this.m_serverWalkEndEvent = null
-      }
-      const self = this
-      this.m_serverWalkEndEvent = setTimeout(() => {
-        self.m_serverWalking = false
-        self.m_serverWalkEndEvent = null
-      }, 100)
-    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('onWalkFinish'))
   }
 
-  onAppear() {
-    // OTC: Creature::onAppear();
+  /** OTC: isWalking() – creature is in walk state. */
+  isWalking() {
+    const creature = g_map.getCreatureById?.(this.getId())
+    return !!creature?.m_walking
   }
 
-  onPositionChange(newPos, oldPos, mapStore) {
+  isDead() {
+    return this.m_health != null && this.m_health <= 0
+  }
+
+  onAppear() {}
+
+  /** OTC: onPositionChange(newPos, oldPos) – if newPos == m_autoWalkDestination stopAutoWalk(); else if m_autoWalkDestination && newPos == m_lastAutoWalkPosition autoWalk(dest); m_serverWalk = false. */
+  onPositionChange(newPos, oldPos) {
+    if (this.isPreWalking()) return
+    this.m_serverWalk = false
     if (positionEquals(newPos, this.m_autoWalkDestination)) this.stopAutoWalk()
-    else if (positionIsValid(this.m_autoWalkDestination) && positionEquals(newPos, this.m_lastAutoWalkPosition)) {
-      this.autoWalk(this.m_autoWalkDestination, mapStore)
-    }
+    else if (positionIsValid(this.m_autoWalkDestination) && positionEquals(newPos, this.m_lastAutoWalkPosition)) this.autoWalk(this.m_autoWalkDestination, mapStore)
   }
 
   setStates(states) {
@@ -327,8 +345,8 @@ export class LocalPlayer {
     if (this.m_health !== health || this.m_maxHealth !== maxHealth) {
       this.m_health = health
       this.m_maxHealth = maxHealth
-      if (health === 0) {
-        if (this.m_preWalking) this.stopWalk()
+      if (this.isDead()) {
+        if (this.isPreWalking()) this.stopWalk()
         this.lockWalk()
       }
     }
@@ -505,11 +523,11 @@ export class LocalPlayer {
     return this.m_blessings
   }
 
-  hasSight(pos, mapStore) {
-    if (!mapStore?.center) return false
-    const c = mapStore.center
-    const left = mapStore.range?.left ?? 8
-    const top = mapStore.range?.top ?? 6
+  hasSight(pos) {
+    if (!g_map?.center) return false
+    const c = g_map.center
+    const left = g_map.range?.left ?? 8
+    const top = g_map.range?.top ?? 6
     return Math.abs(pos.x - c.x) <= left - 1 && Math.abs(pos.y - c.y) <= top - 1
   }
 
@@ -517,16 +535,26 @@ export class LocalPlayer {
     return this.m_known
   }
 
+  /** OTC: isPreWalking() – !m_preWalks.empty() */
   isPreWalking() {
-    return this.m_preWalking
+    return this.m_preWalks.length > 0
+  }
+
+  getPreWalkingSize() {
+    return this.m_preWalks.length
+  }
+
+  resetPreWalk() {
+    this.m_preWalks = []
   }
 
   isAutoWalking() {
     return positionIsValid(this.m_autoWalkDestination)
   }
 
+  /** OTC: isServerWalking() – m_serverWalk */
   isServerWalking() {
-    return this.m_serverWalking
+    return this.m_serverWalk
   }
 
   isPremium() {
@@ -539,4 +567,4 @@ export class LocalPlayer {
 }
 
 export const localPlayer = new LocalPlayer()
-export { PREWALK_TIMEOUT, DirInvalid }
+export { DirInvalid }

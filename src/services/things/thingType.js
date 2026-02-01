@@ -4,7 +4,7 @@
  */
 
 import { FEATURES, isFeatureEnabled } from '../protocol/features.js'
-import { getGameClientVersion } from '../../game/g_game.js'
+import { g_game } from '../client/Game.js'
 
 // thingtype.h FrameGroupType
 export const FrameGroupType = {
@@ -286,7 +286,7 @@ export class ThingType {
     this.m_null = false
     this.m_id = clientId
     this.m_category = category
-    const clientVersion = getGameClientVersion()
+    const clientVersion = g_game.getClientVersion()
     let count = 0
     let attr = -1
     let done = false

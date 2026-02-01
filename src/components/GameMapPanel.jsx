@@ -1,11 +1,11 @@
 // ui/components/GameMapPanel.jsx
 import { useEffect, useRef } from 'react'
-import { MapView } from '../services/render/MapView.js'
-import { getThings, loadThings } from '../services/things/things.js'
-import { sendMove, GAME_CLIENT_OPCODES, OPCODE_TO_DIRECTION } from '../services/protocol/gameProtocol.js'
+import { MapView } from '../services/client/MapView.js'
+import { getThings, loadThings } from '../services/protocol/things.js'
+import { sendMove, GAME_CLIENT_OPCODES, OPCODE_TO_DIRECTION } from '../services/client/ProtocolGameParse.js'
 import { isFeatureEnabled } from '../services/protocol/features.js'
 import { localPlayer } from '../services/game/LocalPlayer.js'
-import { getMapStore } from '../services/protocol/mapStore.js'
+import { g_map } from '../services/client/ClientMap.js'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 
@@ -25,9 +25,9 @@ export default function GameMapPanel() {
     if (!host) return
 
     const thingsRef = { current: getThings() }
-    const mapStore = getMapStore()
 
     mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
+    mapStore.addMapView(mapViewRef.current)
     if (mapStore.center?.x != null) {
       mapViewRef.current.setMapState(mapStore.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
@@ -42,27 +42,26 @@ export default function GameMapPanel() {
     })
 
     const onMap = () => {
-      const state = getMapStore().getMapStateForView()
+      const state = g_map.getMapStateForView()
       mapViewRef.current?.setMapState(state)
       mapViewRef.current?.requestVisibleTilesCacheUpdate()
       mapViewRef.current?.draw()
     }
 
     const onMapMove = () => {
-      const ms = getMapStore()
-      if (!ms?.center || !mapViewRef.current) return
-      mapViewRef.current.setMapState(ms.getMapStateForView())
+      if (!g_map?.center || !mapViewRef.current) return
+      mapViewRef.current.setMapState(g_map.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
     const onKeyDown = (e) => {
       const opcode = WASD_TO_MOVE[e.code]
       if (opcode == null) return
-      if (!localPlayer.canWalk(mapStore)) return
+      if (!localPlayer.canWalk()) return
       e.preventDefault()
       if (isFeatureEnabled('GameAllowPreWalk')) {
         const dir = OPCODE_TO_DIRECTION[opcode]
-        if (dir != null) localPlayer.preWalk(dir)
+        if (dir != null) localPlayer.preWalk(dir,)
       }
       sendMove(opcode)
     }
@@ -86,6 +85,7 @@ export default function GameMapPanel() {
       window.removeEventListener('ot:map', onMap)
       window.removeEventListener('ot:mapMove', onMapMove)
       window.removeEventListener('keydown', onKeyDown, true)
+      g_map.removeMapView(mapViewRef.current)
       mapViewRef.current?.dispose()
       mapViewRef.current = null
       host.innerHTML = ''

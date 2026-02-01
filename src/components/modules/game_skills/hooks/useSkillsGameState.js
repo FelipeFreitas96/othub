@@ -97,8 +97,8 @@ export function useSkillsGameState(options = {}) {
   const statsCacheRef = useRef(initialStatsCache())
   const expSpeedIntervalRef = useRef(null)
 
-  const isOnline = useGGame ? game.isOnline : internalOnline
-  const rawPlayer = useGGame ? game.player : internalPlayer
+  const isOnline = useGGame ? game.isOnline() : internalOnline
+  const rawPlayer = useGGame ? game.getLocalPlayer() : internalPlayer
   const player = useGGame && rawPlayer ? SkillsService.enrichPlayerForDisplay(rawPlayer, expRating) : rawPlayer
 
   const refresh = useCallback(() => {

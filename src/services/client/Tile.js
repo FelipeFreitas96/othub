@@ -5,10 +5,10 @@
  * OTC drawCreature: skip walking in m_things; setDrawOrder(THIRD) → m_walkingCreatures at cDest → resetDrawOrder().
  */
 
-import { DrawFlags } from './drawFlags.js'
-import { DrawOrder } from './DrawPool.js'
-import { Item } from '../client/Item.js'
-import { Creature } from '../client/Creature.js'
+import { DrawFlags } from '../graphics/drawFlags.js'
+import { DrawOrder } from '../graphics/DrawPool.js'
+import { Item } from './Item.js'
+import { Creature } from './Creature.js'
 
 const MAX_THINGS = 10
 const TILE_PIXELS = 32
@@ -333,5 +333,5 @@ export class Tile {
   }
 }
 
-export { DrawFlags, DEFAULT_DRAW_FLAGS } from './drawFlags.js'
+export { DrawFlags, DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags.js'
 export { MAX_THINGS, TILE_PIXELS, MAX_ELEVATION }

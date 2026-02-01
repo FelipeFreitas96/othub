@@ -9,12 +9,11 @@
  */
 
 import * as THREE from 'three'
-import { GameMap } from './GameMap.js'
-import { DrawPool } from './DrawPool.js'
-import { DEFAULT_DRAW_FLAGS } from './drawFlags.js'
-import { Creature } from '../client/Creature.js'
+import { GameMap } from '../render/GameMap.js'
+import { DrawPool } from '../graphics/DrawPool.js'
+import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags.js'
 import { localPlayer } from '../game/LocalPlayer.js'
-import { getMapStore } from '../client/ClientMap.js'
+import { g_map } from './ClientMap.js'
 
 const TILE_PIXELS = 32
 /** LERP 0 = câmera fixa no alvo (sem suavização). */
@@ -26,7 +25,7 @@ export class MapView {
     this.w = w
     this.h = h
     this.thingsRef = thingsRef
-    this.mapStoreRef = mapStoreRef ?? { get current() { return getMapStore() } }
+    this.mapStoreRef = mapStoreRef ?? g_map
 
     this.m_cachedFirstVisibleFloor = 7
     this.m_cachedLastVisibleFloor = 7

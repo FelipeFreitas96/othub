@@ -65,27 +65,55 @@ export class InputMessage {
     }
 
     /**
-     * Read a string
-     * Format: 16-bit length + string bytes
-     * Clamps length to remaining buffer to avoid overflow (e.g. stream misalignment).
+     * Read a 64-bit unsigned integer (little-endian). JS number up to 2^53-1 safe; higher values may lose precision.
+     * @returns {number}
+     */
+    getU64() {
+        if (!this.canRead(8)) {
+            throw new Error('InputMessage: Cannot read U64, buffer overflow')
+        }
+        const lo =
+            this.buffer[this.position] |
+            (this.buffer[this.position + 1] << 8) |
+            (this.buffer[this.position + 2] << 16) |
+            (this.buffer[this.position + 3] << 24)
+        const hi =
+            this.buffer[this.position + 4] |
+            (this.buffer[this.position + 5] << 8) |
+            (this.buffer[this.position + 6] << 16) |
+            (this.buffer[this.position + 7] << 24)
+        this.position += 8
+        return hi * 0x100000000 + (lo >>> 0)
+    }
+
+    /**
+     * Read a 64-bit double (little-endian IEEE 754).
+     * @returns {number}
+     */
+    getDouble() {
+        if (!this.canRead(8)) {
+            throw new Error('InputMessage: Cannot read Double, buffer overflow')
+        }
+        const bytes = new Uint8Array(8)
+        for (let i = 0; i < 8; i++) bytes[i] = this.buffer[this.position + i]
+        this.position += 8
+        const view = new DataView(bytes.buffer)
+        return view.getFloat64(0, true)
+    }
+
+    /**
+     * Read a string. OTC 1:1: InputMessage::getString() – U16 length, then checkRead(length), then read length bytes.
+     * Format: 16-bit length + string bytes. Throws if length exceeds available buffer (no clamping).
      * @returns {string}
      */
     getString() {
         const length = this.getU16()
-        const available = this.buffer.length - this.position
-        const toRead = length > available ? Math.max(0, available) : length
-        if (toRead < length && available < length) {
-            if (typeof console !== 'undefined' && console.warn) {
-                console.warn(`InputMessage: getString length ${length} > available ${available}, clamping`)
-            }
+        if (!this.canRead(length)) {
+            throw new Error(`InputMessage: getString length ${length} exceeds available ${this.buffer.length - this.position}`)
         }
         let str = ''
-        for (let i = 0; i < toRead; i++) {
+        for (let i = 0; i < length; i++) {
             str += String.fromCharCode(this.buffer[this.position++])
-        }
-        if (toRead < length) {
-            const skip = Math.min(length - toRead, this.buffer.length - this.position)
-            this.position += skip
         }
         return str
     }
