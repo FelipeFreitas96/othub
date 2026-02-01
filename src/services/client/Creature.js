@@ -84,7 +84,7 @@ export class Creature {
   /**
    * OTC Creature::walk(oldPos, newPos) – m_lastStepDirection, m_lastStepFrom/To, setDirection, m_walking=true, m_walkTimer.restart(), m_walkedPixels=0, m_walkTurnDirection=Invalid, nextWalkUpdate().
    */
-  walk(fromPos, toPos, mapStore = null) {
+  walk(fromPos, toPos) {
     if (!fromPos || !toPos || (fromPos.x === toPos.x && fromPos.y === toPos.y && fromPos.z === toPos.z)) return
     this.m_lastStepDirection = Creature.getDirectionFromPosition(fromPos, toPos)
     this.m_fromPos = { ...fromPos }
@@ -100,7 +100,7 @@ export class Creature {
     this.m_footStep = 0
     this.m_lastFootTime = 0
     this.m_walkTurnDirection = DirInvalid
-    this.nextWalkUpdate(typeof performance !== 'undefined' ? performance.now() : Date.now(), mapStore)
+    this.nextWalkUpdate(typeof performance !== 'undefined' ? performance.now() : Date.now())
   }
 
   /** OTC: Creature::allowAppearWalk() – seta m_allowAppearWalk=true para desenhar animação de walk ao aparecer (parseCreatureMove). */
@@ -125,21 +125,21 @@ export class Creature {
   /**
    * OTC Creature::stopWalk() – if (!m_walking) return; terminateWalk().
    */
-  stopWalk(mapStore = null) {
+  stopWalk() {
     if (!this.m_walking) return
-    this.terminateWalk(mapStore)
+    this.terminateWalk()
   }
 
   /**
    * OTC Creature::nextWalkUpdate() – remove m_walkUpdateEvent; updateWalk(); onWalking(); if (!m_walking) return; schedule next.
    */
-  nextWalkUpdate(now, mapStore) {
+  nextWalkUpdate(now) {
     if (this.m_walkUpdateEvent != null) {
       clearTimeout(this.m_walkUpdateEvent)
       if (typeof cancelAnimationFrame === 'function' && typeof this.m_walkUpdateEvent === 'number') cancelAnimationFrame(this.m_walkUpdateEvent)
       this.m_walkUpdateEvent = null
     }
-    this.updateWalk(now, mapStore)
+    this.updateWalk(now)
     this.onWalking()
     if (!this.m_walking) return
     const stepDuration = this.m_stepDuration || 300
@@ -147,7 +147,7 @@ export class Creature {
     const self = this
     const run = () => {
       self.m_walkUpdateEvent = null
-      self.nextWalkUpdate(typeof performance !== 'undefined' ? performance.now() : Date.now(), mapStore || null)
+      self.nextWalkUpdate(typeof performance !== 'undefined' ? performance.now() : Date.now())
     }
     this.m_walkUpdateEvent = this.isCameraFollowing()
       ? (typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame(run) : setTimeout(run, 16))
@@ -169,21 +169,21 @@ export class Creature {
   /**
    * OTC Creature::updateWalkingTile() – determina newWalkingTile por rect; remove de m_walkingTile, add em newWalkingTile; notificateTileUpdate se cameraFollowing.
    */
-  updateWalkingTile(mapStore) {
-    if (!mapStore || !this.m_fromPos || !this.m_toPos) return
+  updateWalkingTile() {
+    if (!this.m_fromPos || !this.m_toPos) return
     const progress = Math.min(1, this.m_walkedPixels / TILE_PIXELS)
     const x = Math.floor(this.m_fromPos.x + (this.m_toPos.x - this.m_fromPos.x) * progress)
     const y = Math.floor(this.m_fromPos.y + (this.m_toPos.y - this.m_fromPos.y) * progress)
     const z = this.m_fromPos.z
-    const newWalkingTile = mapStore.getOrCreateTile?.({ x, y, z })
+    const newWalkingTile = g_map.getOrCreateTile?.({ x, y, z })
     if (newWalkingTile === this.m_walkingTile) return
     if (this.m_walkingTile) {
       Tile.removeWalkingCreature(this.m_walkingTile, this)
     }
     if (newWalkingTile) {
       Tile.addWalkingCreature(newWalkingTile, this)
-      if (this.isCameraFollowing() && mapStore.notificateTileUpdate) {
-        mapStore.notificateTileUpdate(newWalkingTile.pos ?? { x, y, z }, this, 'clean')
+      if (this.isCameraFollowing() && g_map.notificateTileUpdate) {
+        g_map.notificateTileUpdate(newWalkingTile.pos ?? { x, y, z }, this, 'clean')
       }
     }
     this.m_walkingTile = newWalkingTile
@@ -211,7 +211,7 @@ export class Creature {
   /**
    * OTC Creature::updateWalk() – creature.cpp L787-801: oldWalkOffset; updateWalkAnimation; updateWalkOffset; updateWalkingTile; isCameraFollowing && oldWalkOffset!=m_walkOffset → notificateCameraMove(m_walkOffset); m_walkedPixels==spriteSize → terminateWalk().
    */
-  updateWalk(now, mapStore) {
+  updateWalk(now) {
     if (!this.m_walking || !this.m_fromPos || !this.m_toPos) return false
     const stepDuration = this.m_stepDuration || 300
     const walkTicksPerPixel = stepDuration / TILE_PIXELS
@@ -221,12 +221,12 @@ export class Creature {
     const oldWalkOffset = { x: this.m_walkOffsetX, y: this.m_walkOffsetY }
     this.updateWalkAnimation()
     this.updateWalkOffset(this.m_walkedPixels)
-    this.updateWalkingTile(mapStore)
-    if (this.isCameraFollowing() && mapStore?.notificateCameraMove && (oldWalkOffset.x !== this.m_walkOffsetX || oldWalkOffset.y !== this.m_walkOffsetY)) {
-      mapStore.notificateCameraMove(this.getWalkOffset())
+    this.updateWalkingTile()
+    if (this.isCameraFollowing() && g_map?.notificateCameraMove && (oldWalkOffset.x !== this.m_walkOffsetX || oldWalkOffset.y !== this.m_walkOffsetY)) {
+      g_map.notificateCameraMove(this.getWalkOffset())
     }
     if (this.m_walkedPixels >= TILE_PIXELS) {
-      this.terminateWalk(mapStore)
+      this.terminateWalk()
       return true
     }
     return false
@@ -235,7 +235,7 @@ export class Creature {
   /**
    * OTC Creature::terminateWalk() – cancel m_walkUpdateEvent; m_walkTurnDirection→setDirection; remove from m_walkingTile; m_walkedPixels=0, m_walkOffset={}, m_walking=false; schedule m_walkAnimationPhase=0.
    */
-  terminateWalk(mapStore = null) {
+  terminateWalk() {
     if (this.m_walkUpdateEvent != null) {
       clearTimeout(this.m_walkUpdateEvent)
       if (typeof cancelAnimationFrame === 'function' && typeof this.m_walkUpdateEvent === 'number') cancelAnimationFrame(this.m_walkUpdateEvent)
@@ -257,13 +257,13 @@ export class Creature {
     this.m_fromPos = null
     this.m_toPos = null
     this.m_allowAppearWalk = false
-    mapStore?.notificateWalkTerminated?.(this)
+    g_map?.notificateWalkTerminated?.(this)
   }
 
   /**
    * OTC Creature::onAppear() – creature.cpp L598-625: cancel m_disappearEvent; isCameraFollowing && m_position!=m_oldPosition → notificateCameraMove(m_walkOffset); m_removed → stopWalk, m_removed=false, callLuaField; walk inRange → allowAppearWalk=false, walk(), callLuaField; teleport → stopWalk, callLuaField onDisappear/onAppear.
    */
-  onAppear(mapStore, position = null, oldPosition = null) {
+  onAppear(position = null, oldPosition = null) {
     if (position) this.m_position = position
     if (oldPosition) this.m_oldPosition = oldPosition
     if (this.m_disappearEvent) {
@@ -273,11 +273,11 @@ export class Creature {
     const op = this.m_oldPosition || oldPosition
     const pos = this.m_position || position
     const positionChanged = op && pos && (op.x !== pos.x || op.y !== pos.y || op.z !== pos.z)
-    if (this.isCameraFollowing() && positionChanged && mapStore?.notificateCameraMove) {
-      mapStore.notificateCameraMove(this.getWalkOffset())
+    if (this.isCameraFollowing() && positionChanged && g_map?.notificateCameraMove) {
+      g_map.notificateCameraMove(this.getWalkOffset())
     }
     if (this.m_removed) {
-      this.stopWalk(mapStore)
+      this.stopWalk()
       this.m_removed = false
       return
     }
@@ -286,10 +286,10 @@ export class Creature {
       const dy = Math.abs(pos.y - op.y)
       if (dx <= 1 && dy <= 1 && this.m_allowAppearWalk) {
         this.m_allowAppearWalk = false
-        this.walk(op, pos, mapStore)
+        this.walk(op, pos, )
         return
       }
-      this.stopWalk(mapStore)
+      this.stopWalk()
     }
   }
 

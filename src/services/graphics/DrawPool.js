@@ -165,13 +165,12 @@ export class DrawPool {
     return pool
   }
 
-  constructor({ scene, w, h, thingsRef, mapStoreRef, debugQueue = false, debugDelayMs = 25 } = {}) {
+  constructor({ scene, w, h, thingsRef, debugQueue = false, debugDelayMs = 25 } = {}) {
     this.id = 0
     this.scene = scene
     this.w = w ?? 15
     this.h = h ?? 11
     this.thingsRef = thingsRef
-    this.mapStoreRef = mapStoreRef
     this.debugQueue = !!debugQueue
     this.debugDelayMs = Math.max(0, debugDelayMs | 0)
 

@@ -20,12 +20,11 @@ const TILE_PIXELS = 32
 const CAMERA_FOLLOW_LERP = 0
 
 export class MapView {
-  constructor({ host, w, h, thingsRef, mapStoreRef }) {
+  constructor({ host, w, h, thingsRef }) {
     this.m_visibleDimension = { width: w, height: h }
     this.w = w
     this.h = h
     this.thingsRef = thingsRef
-    this.mapStoreRef = mapStoreRef ?? g_map
 
     this.m_cachedFirstVisibleFloor = 7
     this.m_cachedLastVisibleFloor = 7
@@ -46,7 +45,7 @@ export class MapView {
 
     const debugQueue = typeof window !== 'undefined' && !!window.__otDebugQueue
     const debugDelayMs = typeof window !== 'undefined' ? (window.__otDebugDelayMs ?? 25) : 25
-    this.pipeline = new DrawPool({ scene: this.scene, w, h, thingsRef, mapStoreRef: this.mapStoreRef, debugQueue, debugDelayMs })
+    this.pipeline = new DrawPool({ scene: this.scene, w, h, thingsRef, debugQueue, debugDelayMs })
     this.map = new GameMap()
     this.pipeline.setMap(this.map)
 
@@ -142,14 +141,13 @@ export class MapView {
   }
 
   draw() {
-    const mapStore = this.mapStoreRef?.current
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-    if (mapStore?.center) {
-      const pos = mapStore.center
+    if (g_map?.center) {
+      const pos = g_map.center
       const last = this._lastMapStoreCenter
       if (!last || last.x !== pos.x || last.y !== pos.y || last.z !== pos.z) {
         this._lastMapStoreCenter = { x: pos.x, y: pos.y, z: pos.z }
-        this.setMapState(mapStore.getMapStateForView())
+        this.setMapState(g_map.getMapStateForView())
         if (this.m_smoothCameraX == null || this.m_smoothCameraY == null) {
           this.m_smoothCameraX = pos.x
           this.m_smoothCameraY = pos.y
@@ -160,8 +158,8 @@ export class MapView {
       let targetX = pos.x
       let targetY = pos.y
       const playerId = localPlayer?.getId?.()
-      if (playerId != null && mapStore.getCreatureById) {
-        const creature = mapStore.getCreatureById(playerId)
+      if (playerId != null && g_map.getCreatureById) {
+        const creature = g_map.getCreatureById(playerId)
         if (creature?.m_walking && creature.getWalkOffset) {
           const off = creature.getWalkOffset()
           targetX = pos.x + (off.x ?? 0) / TILE_PIXELS
@@ -183,7 +181,7 @@ export class MapView {
     }
     if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
     this.pipeline.beginFrame()
-    // OTC: tile->draw(transformPositionTo2D(tile->getPosition()), flags). Walking creatures ficam no Tile (m_walkingCreatures); o Tile obtém via pipeline.mapStoreRef.
+    // OTC: tile->draw(transformPositionTo2D(tile->getPosition()), flags). Walking creatures ficam no Tile (m_walkingCreatures); o Tile obtém via pipeline.
     for (const entry of this.m_cachedVisibleTiles) {
       entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y)
     }

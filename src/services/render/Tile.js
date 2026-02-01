@@ -91,22 +91,21 @@ export class Tile {
   /**
    * OTC: lógica de “adicionar criatura andando ao tile de origem” – não fica em mapStore.
    * Remove da lista de walking de todos os tiles; remove do stack do tile atual; adiciona ao fromPos.
-   * mapStore: objeto com m_tiles, findCreaturePosition(id), removeThingByPos(pos, stackPos), getOrCreateTile(pos).
    */
-  static addWalkingCreatureToTile(creature, fromPos, mapStore) {
-    if (!creature || !fromPos || !mapStore) return
-    const tiles = mapStore.m_tiles?.values?.()
+  static addWalkingCreatureToTile(creature, fromPos) {
+    if (!creature || !fromPos) return
+    const tiles = g_map.m_tiles?.values?.()
     if (tiles) {
       for (const tile of tiles) {
         Tile.removeWalkingCreature(tile, creature)
       }
     }
     const creatureId = creature.getId?.() ?? creature.m_entry?.creatureId ?? creature.m_entry?.id
-    if (creatureId != null && mapStore.findCreaturePosition && mapStore.removeThingByPos) {
-      const found = mapStore.findCreaturePosition(creatureId)
-      if (found?.pos != null && found.stackPos != null) mapStore.removeThingByPos(found.pos, found.stackPos)
+    if (creatureId != null && g_map.findCreaturePosition && g_map.removeThingByPos) {
+      const found = g_map.findCreaturePosition(creatureId)
+      if (found?.pos != null && found.stackPos != null) g_map.removeThingByPos(found.pos, found.stackPos)
     }
-    const tile = mapStore.getOrCreateTile?.(fromPos)
+    const tile = g_map.getOrCreateTile?.(fromPos)
     if (tile) Tile.addWalkingCreature(tile, creature)
   }
 
@@ -210,7 +209,6 @@ export class Tile {
     const { DrawCreatures } = DrawFlags
     if (!(drawFlags & DrawCreatures)) return
 
-    const mapStore = pipeline.mapStoreRef?.current
     const walking = this.m_meta?.walkingCreatures ?? []
     const walkingIds = new Set(
       walking.map(wc => wc.entry?.creatureId ?? wc.entry?.id).filter(id => id != null).map(id => String(id))
@@ -219,7 +217,7 @@ export class Tile {
     for (const thing of this.m_things) {
       if (!thing.isCreature?.()) continue
       const creatureId = thing.m_entry?.creatureId ?? thing.m_entry?.id
-      const known = mapStore?.getCreatureById?.(creatureId)
+      const known = g_map?.getCreatureById?.(creatureId)
       if (known?.isWalking?.()) continue
       if (creatureId != null && walkingIds.has(String(creatureId))) continue
       const creatureToDraw = known ?? thing

@@ -6,8 +6,6 @@
  * View state: construído via getTile (OTC: MapView usa map.getTile).
  */
 import { Creature } from './Creature.js'
-import { localPlayer } from '../game/LocalPlayer.js'
-import { Tile } from './Tile.js'
 import { g_drawPool } from '../graphics/DrawPoolManager.js'
 import { DrawPoolType } from '../graphics/DrawPool.js'
 
@@ -348,9 +346,6 @@ export class ClientMap {
   upsertCreature(creature) { this.addCreature(creature) }
   key(x, y, z) { return this._key(x, y, z) }
 
-  /**
-   * Estado para a view (GameMap.loadFromOtState). Fonte única: dados do mapStore; sem DTO no protocolo.
-   */
   getMapStateForView() {
     const pos = this.getCentralPosition()
     const zMin = Math.max(0, pos.z - 2)

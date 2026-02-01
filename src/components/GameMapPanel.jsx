@@ -27,16 +27,16 @@ export default function GameMapPanel() {
     const thingsRef = { current: getThings() }
 
     mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
-    mapStore.addMapView(mapViewRef.current)
-    if (mapStore.center?.x != null) {
-      mapViewRef.current.setMapState(mapStore.getMapStateForView())
+    g_map.addMapView(mapViewRef.current)
+    if (g_map.center?.x != null) {
+      mapViewRef.current.setMapState(g_map.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
     loadThings(860).then((t) => {
       thingsRef.current = t
-      if (mapViewRef.current && mapStore.center?.x != null) {
-        mapViewRef.current.setMapState(mapStore.getMapStateForView())
+      if (mapViewRef.current && g_map.center?.x != null) {
+        mapViewRef.current.setMapState(g_map.getMapStateForView())
         mapViewRef.current.draw()
       }
     })

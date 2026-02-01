@@ -23,6 +23,7 @@ import SkillRow from './SkillRow'
 import SkillsMenu from './SkillsMenu'
 import { SkillsService } from '../service/skillsService'
 import { useGameTextMessage } from '../../game_textmessage'
+import { GameEventsEnum } from '../../../../services/client/Const';
 
 const { ROWS, ROW_ID_TO_KEY, DEFAULT_VISIBILITY, STORAGE_KEY } = SkillsService
 
