@@ -121,10 +121,10 @@ export class GameMap {
 
   /**
    * OTC mapview.cpp: view só precisa da câmera e do range; tiles vêm de g_map.getTile (setSourceMap).
-   * Não existe loadFromOtState no OTClient.
+   * cameraPos: quando fornecido (ex.: MapView.getCameraPosition() com follow), usa em vez de source.getCentralPosition().
    */
-  setCameraFromMap(source: MapSource) {
-    const pos = source.getCentralPosition()
+  setCameraFromMap(source: MapSource, cameraPos?: PositionLike) {
+    const pos = cameraPos ?? source.getCentralPosition()
     const r = source.getAwareRange()
     this.cameraX = pos.x
     this.cameraY = pos.y

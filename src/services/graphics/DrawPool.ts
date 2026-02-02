@@ -694,6 +694,7 @@ export class DrawPool {
     if (!canvas) { this.texCache.set(spriteId, null); return null }
     const tex = new THREE.CanvasTexture(canvas)
     tex.magFilter = tex.minFilter = THREE.NearestFilter
+    tex.colorSpace = THREE.SRGBColorSpace
     this.texCache.set(spriteId, tex)
     return tex
   }
@@ -702,6 +703,7 @@ export class DrawPool {
     if (this.canvasTexCache.has(canvas)) return this.canvasTexCache.get(canvas)
     const tex = new THREE.CanvasTexture(canvas)
     tex.magFilter = tex.minFilter = THREE.NearestFilter
+    tex.colorSpace = THREE.SRGBColorSpace
     this.canvasTexCache.set(canvas, tex)
     return tex
   }
@@ -746,9 +748,12 @@ export class DrawPool {
     const ty = Math.max(0, Math.min(this.h - 1, Math.floor(tileY)))
     
     if (!texture || !this.tileGroups.length) return
-    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true })
-    mat.depthTest = false
-    mat.depthWrite = false
+    const mat = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    })
     const m = new THREE.Mesh(this.plane, mat)
     m.visible = true
     m.scale.set(width, height, 1)

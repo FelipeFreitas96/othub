@@ -20,8 +20,7 @@ export default function GameMapPanel() {
 
     const thingsRef = { current: getThings() }
 
-    // MapView usa a área aware completa (18x14) para processar tiles
-    // O zoom da câmera do Three.js ajusta para mostrar apenas a área visível (15x11)
+    // MapView igual ao OTClient: m_drawDimension 18x14, aware range left=8 right=9 top=6 bottom=7
     mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
     g_map.addMapView(mapViewRef.current)
     

@@ -18,11 +18,17 @@ import { g_player } from './LocalPlayer'
 import { g_map } from './ClientMap'
 import { g_dispatcher } from '../framework/EventDispatcher'
 import { Position } from './Position'
+import { LightView } from './LightView'
+import { Creature } from './Creature'
 
 const TILE_PIXELS = 32
 
 export class MapView {
+  /** OTC: m_visibleDimension – área visível (ex.: 15x11). */
   m_visibleDimension: { width: number, height: number }
+  /** OTC: m_drawDimension – área desenhada (ex.: visibleDimension + Size(3,3) = 18x14). */
+  m_drawDimension: { width: number, height: number }
+  /** Atalho para m_drawDimension (loop, pipeline, lightView). */
   w: number
   h: number
   thingsRef: any
@@ -43,11 +49,23 @@ export class MapView {
   pipeline: DrawPool
   map: GameMap
   _lastCenter: Position | null = null
+  /** OTC mapview.h L247: m_lastCameraPosition – usada em updateVisibleTiles e passada em onMapCenterChange. */
+  m_lastCameraPosition: Position | null = null
+  /** OTC mapview.h: m_followingCreature – criatura seguida pela câmera (local player). */
+  m_followingCreature: Creature | null = null
+  /** OTC: m_customCameraPosition – posição da câmera quando não está seguindo criatura (pan manual). */
+  m_customCameraPosition: Position | null = null
+  /** OTC: LightView – mapa de luz por tile, desenhado com MULTIPLY por cima da cena. */
+  m_lightView: LightView
+  private lightOverlayMesh: THREE.Mesh | null = null
+  private lightTexture: THREE.CanvasTexture | null = null
 
   constructor({ host, w, h, thingsRef }: { host: HTMLElement, w: number, h: number, thingsRef: any }) {
-    this.m_visibleDimension = { width: w, height: h }
-    this.w = w
-    this.h = h
+    const visible = this.getViewportDimensions()
+    this.m_visibleDimension = { width: visible.width, height: visible.height }
+    this.m_drawDimension = { width: w, height: h }
+    this.w = this.m_drawDimension.width
+    this.h = this.m_drawDimension.height
     this.thingsRef = thingsRef
     this.host = host
 
@@ -68,8 +86,33 @@ export class MapView {
     this.camera = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 0.1, 100)
     this.camera.position.set(0, 0, 10)
 
+    this.m_lightView = new LightView()
+    this.m_lightView.resize(w, h, TILE_PIXELS)
+    this.m_lightView.setGlobalLight(g_map?.getLight?.() ?? { intensity: 250, color: 215 })
+    this.m_lightView.updatePixels()
+    const lightCanvas = this.m_lightView.getCanvas()
+    if (lightCanvas) {
+      this.lightTexture = new THREE.CanvasTexture(lightCanvas)
+      this.lightTexture.colorSpace = THREE.SRGBColorSpace
+      const lightMat = new THREE.MeshBasicMaterial({
+        map: this.lightTexture,
+        transparent: true,
+        blending: THREE.MultiplyBlending,
+        depthTest: false,
+        depthWrite: false,
+      })
+      const lightPlane = new THREE.PlaneGeometry(w, h)
+      this.lightOverlayMesh = new THREE.Mesh(lightPlane, lightMat)
+      this.lightOverlayMesh.position.set(0, 0, 5)
+      this.lightOverlayMesh.renderOrder = 1000
+      this.scene.add(this.lightOverlayMesh)
+    }
+
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    this.renderer.toneMapping = THREE.NoToneMapping
+    this.renderer.toneMappingExposure = 1
     host.appendChild(this.renderer.domElement)
 
     const debugQueue = typeof window !== 'undefined' && !!(window as any).__otDebugQueue
@@ -85,14 +128,140 @@ export class MapView {
   getCachedFirstVisibleFloor() { return this.m_cachedFirstVisibleFloor }
   getCachedLastVisibleFloor() { return this.m_cachedLastVisibleFloor }
 
+  /**
+   * OTC: MapView::calcFramebufferSource(const Size& destSize)
+   * drawOffset = ((m_drawDimension - m_visibleDimension - Size(1)) / 2) * m_tileSize;
+   * if (isFollowingCreature()) drawOffset += getWalkOffset() * scaleFactor;
+   * else if (!m_moveOffset.isNull()) drawOffset += m_moveOffset * scaleFactor;
+   * srcVisible = m_visibleDimension * m_tileSize; srcSize = destSize scaled to srcVisible (KeepAspectRatio);
+   * drawOffset += (srcVisible - srcSize) / 2; return Rect(drawOffset, srcSize);
+   * Retornamos Rect em unidades de mundo (x,y = offset da câmera; width,height = área visível em tiles).
+   */
+  calcFramebufferSource(destSize?: { width: number, height: number }): { x: number, y: number, width: number, height: number } {
+    const scaleFactor = 1 / TILE_PIXELS
+    const drawW = this.m_drawDimension.width
+    const drawH = this.m_drawDimension.height
+    const visibleW = this.m_visibleDimension.width
+    const visibleH = this.m_visibleDimension.height
+
+    // drawOffset = ((m_drawDimension - m_visibleDimension - Size(1)).toPoint() / 2) * m_tileSize (em pixels no OTC)
+    let drawOffsetPxX = ((drawW - visibleW - 1) / 2) * TILE_PIXELS
+    let drawOffsetPxY = ((drawH - visibleH - 1) / 2) * TILE_PIXELS
+
+    if (this.isFollowingCreature()) {
+      const creature = this.getFollowingCreature()
+      if (creature) {
+        const walkOffset = creature.getWalkOffset()
+        // OTC: drawOffset += getWalkOffset() * scaleFactor; scaleFactor = m_tileSize/Otc::TILE_PIXELS (≈ 1)
+        drawOffsetPxX += walkOffset.x
+        drawOffsetPxY += walkOffset.y
+      }
+    }
+    // else if (!m_moveOffset.isNull()) drawOffset += m_moveOffset * scaleFactor; // TODO: m_moveOffset
+
+    const srcVisiblePxW = visibleW * TILE_PIXELS
+    const srcVisiblePxH = visibleH * TILE_PIXELS
+
+    let srcSizePxW = srcVisiblePxW
+    let srcSizePxH = srcVisiblePxH
+    if (destSize && destSize.width > 0 && destSize.height > 0) {
+      const destAspect = destSize.width / destSize.height
+      const visibleAspect = srcVisiblePxW / srcVisiblePxH
+      if (destAspect > visibleAspect) {
+        srcSizePxH = srcVisiblePxH
+        srcSizePxW = srcVisiblePxH * destAspect
+      } else {
+        srcSizePxW = srcVisiblePxW
+        srcSizePxH = srcVisiblePxW / destAspect
+      }
+      drawOffsetPxX += (srcVisiblePxW - srcSizePxW) / 2
+      drawOffsetPxY += (srcVisiblePxH - srcSizePxH) / 2
+    }
+
+    return {
+      x: drawOffsetPxX * scaleFactor,
+      y: drawOffsetPxY * scaleFactor,
+      width: srcSizePxW * scaleFactor,
+      height: srcSizePxH * scaleFactor,
+    }
+  }
+
+  /** OTC MapView::isFollowingCreature() – true quando m_followingCreature está setado. */
+  isFollowingCreature(): boolean {
+    return this.m_followingCreature != null
+  }
+
+  /** OTC MapView::getFollowingCreature() / m_followingCreature. */
+  getFollowingCreature(): Creature | null {
+    return this.m_followingCreature
+  }
+
+  /** OTC mapview.cpp L686-698: getCameraPosition() = m_followingCreature ? creature->getPosition() : m_customCameraPosition (ou central).
+   * During walk: use source position (m_lastStepFromPosition) so camera stays at (x,y) and character animates from (x,y) to (x+1,y).
+   * After walk: use getPosition() (destination).
+   */
+  getCameraPosition(): Position {
+    if (this.m_followingCreature) {
+      const c = this.m_followingCreature as Creature
+      if (c.m_walking && c.m_lastStepFromPosition) {
+        return c.m_lastStepFromPosition.clone()
+      }
+      const pos = c.getPosition()
+      return pos ? pos.clone() : g_map.getCentralPosition()
+    }
+    if (this.m_customCameraPosition) return this.m_customCameraPosition.clone()
+    return g_map.getCentralPosition()
+  }
+
+  /** OTC mapview.h L103: resetLastCamera() – m_lastCameraPosition = {}. */
+  resetLastCamera() {
+    this.m_lastCameraPosition = null
+  }
+
+  /** Para Map::setCentralPosition chamar onMapCenterChange(centralPosition, mapView->m_lastCameraPosition). */
+  getLastCameraPosition(): Position | null {
+    return this.m_lastCameraPosition
+  }
+
+  /** OTC mapview.cpp L581-584: onMapCenterChange(newPos, oldPos) – requestUpdateVisibleTiles. */
+  onMapCenterChange(_newPos: Position, _oldPos: Position | null) {
+    this.requestVisibleTilesCacheUpdate()
+  }
+
+  /** OTC mapview.cpp L644-664: followCreature(creature) – seta m_followingCreature, setCameraFollowing(true), m_lastCameraPosition = {}. */
+  followCreature(creature: Creature | null) {
+    if (creature === this.m_followingCreature) return
+    if (!creature) {
+      const pos = this.m_followingCreature?.getPosition() ?? g_map.getCentralPosition()
+      this.setCameraPosition(pos)
+      return
+    }
+    if (this.m_followingCreature) this.m_followingCreature.setCameraFollowing(false)
+    this.m_followingCreature = creature
+    creature.setCameraFollowing(true)
+    this.m_lastCameraPosition = null
+    this.requestVisibleTilesCacheUpdate()
+  }
+
+  /** OTC mapview.cpp L666-675: setCameraPosition(pos) – clear following, m_customCameraPosition = pos. */
+  setCameraPosition(pos: Position) {
+    if (this.m_followingCreature) {
+      this.m_followingCreature.setCameraFollowing(false)
+      this.m_followingCreature = null
+    }
+    this.m_customCameraPosition = pos.clone()
+    this.requestVisibleTilesCacheUpdate()
+  }
+
   /** OTC mapview.cpp: requestUpdateVisibleTiles(). Não existe setMapState no OTClient – view lê direto do mapa. */
   requestVisibleTilesCacheUpdate() {
     this.m_mustUpdateVisibleTilesCache = true
   }
 
-  /** OTC mapview.cpp L518-524: onCameraMove – requestUpdateMapPosInfo(); if isFollowingCreature() updateViewport(direction). */
+  /** OTC mapview.cpp L518-524: onCameraMove(offset) – requestUpdateMapPosInfo(); if isFollowingCreature() updateViewport(direction). */
   onCameraMove(_offset: { x: number, y: number }) {
     this.requestVisibleTilesCacheUpdate()
+    // OTC: if (isFollowingCreature()) updateViewport(m_followingCreature->isWalking() ? getDirection() : InvalidDirection); – viewport edge; we only request cache update.
   }
 
   /** OTC mapview.cpp L544-555: onTileUpdate – if thing&&isOpaque&&op==REMOVE m_resetCoveredCache; if op==CLEAN requestUpdateVisibleTiles. */
@@ -108,7 +277,8 @@ export class MapView {
   updateVisibleTilesCache() {
     if (!g_map) return
     if (!this.map.sourceMap) this.map.setSourceMap(g_map)
-    this.map.setCameraFromMap(g_map)
+    const cameraPos = this.getCameraPosition()
+    this.map.setCameraFromMap(g_map, cameraPos)
 
     const things = this.thingsRef?.current
     const types = things?.types
@@ -119,8 +289,8 @@ export class MapView {
     if (this.m_cachedLastVisibleFloor < this.m_cachedFirstVisibleFloor) this.m_cachedLastVisibleFloor = this.m_cachedFirstVisibleFloor
 
     this.m_cachedVisibleTiles = []
-    const w = this.w
-    const h = this.h
+    const w = this.m_drawDimension.width
+    const h = this.m_drawDimension.height
     const firstFloor = this.m_cachedFirstVisibleFloor
     const lastFloor = this.m_cachedLastVisibleFloor
     const resetCoveredCache = this.m_resetCoveredCache
@@ -162,40 +332,49 @@ export class MapView {
 
     if (g_map) {
       if (!this.map.sourceMap) this.map.setSourceMap(g_map)
-      this.map.setCameraFromMap(g_map)
-      const center = g_map.getCentralPosition()
-      if (this._lastCenter == null || this._lastCenter.x !== center.x || this._lastCenter.y !== center.y || this._lastCenter.z !== center.z) {
+      // OTC: view usa getCameraPosition() (creature->getPosition() quando following) para câmera; durante walk = destino
+      const cameraPos = this.getCameraPosition()
+      this.map.setCameraFromMap(g_map, cameraPos)
+      if (this._lastCenter == null || this._lastCenter.x !== cameraPos.x || this._lastCenter.y !== cameraPos.y || this._lastCenter.z !== cameraPos.z) {
         this.requestVisibleTilesCacheUpdate()
-        this._lastCenter = center.clone()
+        this._lastCenter = cameraPos.clone()
       }
     }
 
     if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
 
-    let cameraOffsetX = 0
-    let cameraOffsetY = 0
-    if (g_map?.center) {
-      const pos = g_map.center as Position
-      const playerId = g_player?.getId?.()
-      const creature = playerId != null ? g_map.getCreatureById?.(playerId) : null
-      if (creature?.m_walking && creature.m_lastStepToPosition && creature.getWalkOffset) {
-        const off = creature.getWalkOffset()
-        const visualX = creature.m_lastStepToPosition.x + (off.x / TILE_PIXELS)
-        const visualY = creature.m_lastStepToPosition.y + (off.y / TILE_PIXELS)
-        cameraOffsetX = visualX - pos.x
-        cameraOffsetY = -(visualY - pos.y)
-        if (!Number.isFinite(cameraOffsetX)) cameraOffsetX = 0
-        if (!Number.isFinite(cameraOffsetY)) cameraOffsetY = 0
+    // Câmera segue o jogador em tempo real: durante walk, desloca pela posição interpolada (source → dest).
+    let camX = 0
+    let camY = 0
+    if (this.m_followingCreature) {
+      const c = this.m_followingCreature as Creature
+      if (c.m_walking && c.m_lastStepFromPosition && c.m_lastStepToPosition) {
+        const progress = Math.min(1, c.m_walkedPixels / TILE_PIXELS)
+        camX = (c.m_lastStepToPosition.x - c.m_lastStepFromPosition.x) * progress
+        camY = -(c.m_lastStepToPosition.y - c.m_lastStepFromPosition.y) * progress
       }
-      this.camera.position.set(cameraOffsetX, cameraOffsetY, 10)
     }
+    this.camera.position.set(camX, camY, 10)
 
     this.pipeline.beginFrame()
+    const lightView = this.m_lightView.isEnabled() ? this.m_lightView : null
+    if (lightView) this.m_lightView.clear()
     for (const entry of this.m_cachedVisibleTiles) {
-      entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y)
+      entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y, lightView)
     }
     this.pipeline.endFrame()
+
+    if (lightView) {
+      this.m_lightView.updatePixels()
+      if (this.lightTexture) this.lightTexture.needsUpdate = true
+    }
+
     this.render()
+  }
+
+  /** OTC MapView::onGlobalLightChange – atualiza luz global (ex.: subterrâneo). */
+  onGlobalLightChange(light: { intensity: number, color: number }) {
+    this.m_lightView.setGlobalLight(light)
   }
 
   /**
@@ -209,9 +388,9 @@ export class MapView {
     const vw = Math.max(1, this.host.clientWidth)
     const vh = Math.max(1, this.host.clientHeight)
     
-    // Calcula as dimensões do viewport baseado no zoom
-    const worldW = this.w / this.m_zoomLevel
-    const worldH = this.h / this.m_zoomLevel
+    // Calcula as dimensões do viewport baseado no zoom (usa m_drawDimension)
+    const worldW = this.m_drawDimension.width / this.m_zoomLevel
+    const worldH = this.m_drawDimension.height / this.m_zoomLevel
     
     const viewAspect = vw / vh
     const worldAspect = worldW / worldH
@@ -271,13 +450,11 @@ export class MapView {
     const vh = Math.max(1, host.clientHeight)
     this.renderer.setSize(vw, vh, false)
 
-    // O mapa completo é 18x14 (área aware), mas a câmera mostra apenas 15x11 (área visível)
-    // Isso cria um "zoom" natural - a câmera está mais perto, mostrando menos tiles
-    const { width: viewportW, height: viewportH } = this.getViewportDimensions()
-    
-    // Usa viewport (15x11) se fit está ativo, senão usa o mapa completo
-    const cameraW = this.m_fitAwareArea ? viewportW : this.w
-    const cameraH = this.m_fitAwareArea ? viewportH : this.h
+    // OTC: m_visibleDimension (15x11) vs m_drawDimension (18x14) – câmera mostra visible, loop desenha draw
+    const viewportW = this.m_visibleDimension.width
+    const viewportH = this.m_visibleDimension.height
+    const cameraW = this.m_fitAwareArea ? viewportW : this.m_drawDimension.width
+    const cameraH = this.m_fitAwareArea ? viewportH : this.m_drawDimension.height
 
     const viewAspect = vw / vh
     const cameraAspect = cameraW / cameraH

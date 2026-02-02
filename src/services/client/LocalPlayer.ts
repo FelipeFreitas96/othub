@@ -314,8 +314,16 @@ export class LocalPlayer {
   cancelWalk(direction = DirInvalid) {
     if (this.isWalking() && this.isPreWalking()) {
       const id = this.getId()
-      const creature = g_map.getCreatureById(id)
-      if (creature) creature.stopWalk()
+      const creature = g_map.getCreatureById(id) as Creature | null
+      if (creature) {
+        const source = creature.m_lastStepFromPosition
+        creature.stopWalk()
+        // Reverter criatura para o tile de origem (ex.: parede) para câmera e mapa ficarem corretos
+        if (source) {
+          g_map.removeThing(creature)
+          g_map.addThing(creature, source, -1)
+        }
+      }
     }
     this.m_preWalks = []
     this.cancelAdjustInvalidPosEvent()

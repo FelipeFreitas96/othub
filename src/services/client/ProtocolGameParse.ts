@@ -22,6 +22,7 @@ import {
   setExpertPvpMode,
 } from './Game'
 import { Creature } from './Creature'
+import { g_dispatcher } from '../framework/EventDispatcher'
 import { ThingAttr } from '../things/thingType'
 import { SkillEnum, MagicEffectsTypeEnum, MessageModeEnum } from './Const'
 import { Position, Outfit, Thing } from './types'
@@ -63,6 +64,7 @@ const GAME_SERVER_OPCODES = {
   GameServerTalk: 170,            // 0xAA – parseTalk (creature says: name, level, mode, pos/channelId, text)
   GameServerTextMessage: 180,   // 0xB4 – parseTextMessage (system: damage/heal/exp/channel mgmt)
   GameServerGraphicalEffect: 131,   // 0x83 – parseMagicEffect
+  GameServerAmbient: 130,          // 0x82 – parseWorldLight (luz global: dia/subterrâneo)
   GameServerTakeScreenshot: 117,   // 0x75 – parseTakeScreenshot
   GameServerPlayerState: 162,   // 0xA2 – parsePlayerState
 }
@@ -336,6 +338,10 @@ export class ProtocolGameParse {
 
         case GAME_SERVER_OPCODES.GameServerGraphicalEffect:
             this.parseMagicEffect(msg)
+            break
+
+        case GAME_SERVER_OPCODES.GameServerAmbient:
+            this.parseWorldLight(msg)
             break
 
         case GAME_SERVER_OPCODES.GameServerTakeScreenshot:
@@ -990,7 +996,7 @@ export class ProtocolGameParse {
       creature.m_allowAppearWalk = false
       creature.walk(oldPos, newPos)
       if (creature.isCameraFollowing()) {
-        g_map.notificateCameraMove(creature.getWalkOffset())
+        g_map.notificateCameraMove(creature.getDrawOffset())
       }
     }
 
@@ -1100,6 +1106,17 @@ export class ProtocolGameParse {
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:map'))
+    }
+  }
+
+  /** OTC ProtocolGame::parseWorldLight – opcode GameServerAmbient (0x82). Luz global (dia/subterrâneo). */
+  parseWorldLight(msg: InputMessage) {
+    const oldLight = g_map.getLight()
+    const intensity = msg.getU8()
+    const color = msg.getU8()
+    g_map.setLight({ intensity, color })
+    if (typeof window !== 'undefined' && (oldLight.intensity !== intensity || oldLight.color !== color)) {
+      window.dispatchEvent(new CustomEvent('ot:worldLightChange', { detail: { light: g_map.getLight(), oldLight } }))
     }
   }
 
@@ -1312,11 +1329,26 @@ export class ProtocolGameParse {
     g_player.lockWalk(millis)
   }
 
+  /** OTC ProtocolGame::parseMapDescription – protocolgameparse.cpp L1383-1404. */
   parseMapDescription(msg: InputMessage) {
     const things = getThings()
-    const oldPos = g_map.center ? g_map.center.clone() : null
-    const pos = new Position(msg.getU16(), msg.getU16(), msg.getU8())
-    g_map.setCenter(pos)
+    const pos = this.getPosition(msg)
+    const oldPos = g_player.getPosition ? g_player.getPosition() : (g_map.center ? g_map.center.clone() : null)
+    if (!g_map.mapKnown) {
+      const c = g_map.getCreatureById(g_player.getId() as number)
+      if (c) c.setPosition(pos)
+    }
+    g_map.setCentralPosition(pos)
+
+    // OTC: walk is triggered in Creature::onAppear when addThing is called; allow walk if 1-tile move
+    if (oldPos && (oldPos.x !== pos.x || oldPos.y !== pos.y || oldPos.z !== pos.z)) {
+      const dx = Math.abs(pos.x - oldPos.x)
+      const dy = Math.abs(pos.y - oldPos.y)
+      if (dx <= 1 && dy <= 1 && (dx !== 0 || dy !== 0)) {
+        const c = g_map.getCreatureById(g_player.getId() as number)
+        if (c) c.allowAppearWalk()
+      }
+    }
 
     const { w, h } = g_map.getAwareDims()
     const readThing = () => {
@@ -1332,16 +1364,13 @@ export class ProtocolGameParse {
       // subtype already consumed above if needed
       return new Item({ id, subtype }, things.types)
     }
-    // 1:1 protocolgameparse.cpp setTileDescription (L1440)
+    // 1:1 protocolgameparse.cpp setTileDescription (L3696-3725): cleanTile(position); for each thing getThing(msg); if local player resetPreWalk(); addThing(thing, position, stackPos)
     const setTileDescription = (tilePos: Position) => {
-      const tile = g_map.getOrCreateTile(tilePos)
-      if (!tile) return 0
-      tile.m_things = []
+      g_map.cleanTile(tilePos)
       let gotEffect = false
       for (let stackPos = 0; stackPos < 256; stackPos++) {
         if (!msg.canRead(2)) break
-        const marker = msg.peekU16()
-        if (marker >= 0xff00) {
+        if (msg.peekU16() >= 0xff00) {
           const skip = msg.getU16() & 0xff
           return skip
         }
@@ -1351,7 +1380,10 @@ export class ProtocolGameParse {
           continue
         }
         const thing = readThing()
-        if (thing) tile.m_things.push(thing)
+        if (thing?.isCreature?.() && thing.getId?.() === g_player.getId?.()) {
+          g_player.resetPreWalk?.()
+        }
+        if (thing) g_map.addThing(thing, tilePos, stackPos)
       }
       return 0
     }
@@ -1409,39 +1441,32 @@ export class ProtocolGameParse {
     // @ts-ignore
     const zMax = Math.max(startz, endz)
 
-    // OTC: if (!m_mapKnown) { g_dispatcher.addEvent(onMapKnown); m_mapKnown = true; } addEvent(onMapDescription); onTeleport(localPlayer, pos, oldPos)
+    // OTC: if (!m_mapKnown) { g_dispatcher.addEvent(onMapKnown); m_mapKnown = true; } addEvent(onMapDescription); callGlobalField(onTeleport)
     if (!g_map.mapKnown) {
-      // @ts-ignore
-      g_map.m_mapKnown = true
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('ot:mapKnown'))
-      }
+      g_dispatcher.addEvent(() => {
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ot:mapKnown'))
+      })
+      ;(g_map as any).m_mapKnown = true
     }
+    g_dispatcher.addEvent(() => {
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ot:mapDescription'))
+    })
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ot:mapDescription'))
       window.dispatchEvent(new CustomEvent('ot:teleport', { detail: { pos, oldPos } }))
     }
 
-    // Detecção de movimento do jogador: se center mudou 1 tile, iniciar walk (OTC: onAppear -> walk).
+    // OTC: walk triggered in Creature::onAppear (addThing); follow + notificate after onAppear
     if (oldPos && (oldPos.x !== pos.x || oldPos.y !== pos.y || oldPos.z !== pos.z)) {
-      const dx = Math.abs(pos.x - oldPos.x)
-      const dy = Math.abs(pos.y - oldPos.y)
-      const dz = Math.abs(pos.z - oldPos.z)
-      if (dx <= 1 && dy <= 1 && dz === 0 && (dx !== 0 || dy !== 0)) {
-        const playerId = g_player.getId()
-        if (playerId != null) {
-          const creature = g_map.getCreatureById(playerId)
-          if (creature) {
-            // OTClient: Sempre chama walk() - a lógica de continuidade está dentro de walk()
-            creature.walk(oldPos, pos)
-            // OTC: if isFollowingCreature() notificateCameraMove
-            if (creature.isCameraFollowing()) {
-              g_map.notificateCameraMove(creature.getWalkOffset())
-            }
-          }
+      g_player.onPositionChangeServer?.(pos, oldPos)
+      const playerId = g_player.getId()
+      if (playerId != null) {
+        const creature = g_map.getCreatureById(playerId)
+        if (creature) {
+          const mapView = g_map.getMapView(0)
+          if (mapView && (mapView as any).followCreature) (mapView as any).followCreature(creature)
+          if (creature.isCameraFollowing()) g_map.notificateCameraMove(creature.getDrawOffset())
         }
       }
-      g_player.onPositionChangeServer(pos, oldPos)
     }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:map'))
@@ -1512,7 +1537,7 @@ export class ProtocolGameParse {
     }
     let skip = 0
     for (let nz = startz; nz !== endz + zstep; nz += zstep) {
-      skip = setFloorDescription(baseX, baseY, nz, width, height, nz - z, skip)
+      skip = setFloorDescription(baseX, baseY, nz, width, height, z - nz, skip)
     }
   }
 

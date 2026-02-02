@@ -150,6 +150,12 @@ export class ThingType {
   isTopEffect() { return this.m_attribs.has(ThingAttr.TopEffect) }
   isChargeable() { return this.m_attribs.has(ThingAttr.Chargeable) }
   isAnimateAlways() { return this.m_attribs.has(ThingAttr.AnimateAlways) }
+  hasLight() { return this.m_attribs.has(ThingAttr.Light) }
+  getLight(): { intensity: number, color: number } | null {
+    const v = this.m_attribs.get(ThingAttr.Light)
+    if (!v || typeof v !== 'object') return null
+    return { intensity: Math.min(255, (v as any).intensity ?? 0), color: Math.min(215, (v as any).color ?? 215) }
+  }
 
   isStackable() { return this.m_attribs.has(ThingAttr.Stackable) }
   isFluidContainer() { return this.m_attribs.has(ThingAttr.FluidContainer) }
@@ -281,12 +287,17 @@ export class ThingType {
     dx += (pixelOffsetX || 0) / TILE_PIXELS
     dy -= (pixelOffsetY || 0) / TILE_PIXELS  // Negate because Tibia Y is inverted
     // OTC tile.cpp drawThing: newDest = dest - drawElevation * scaleFactor; thing->draw(newDest); updateElevation(thing, drawElevation).
-    // Elevation = deslocamento em y (dy -). A elevation do thing atual NÃO entra na sua posição; só atualiza drawElevation para o próximo.
     const dyElev = drawElevationPx / TILE_PIXELS
 
-    const tx0 = tileX - (bw - 1)
-    const ty0 = tileY - (bh - 1)
+    // Sempre desenhar no grupo do TILE (tileX, tileY) para ground e itens ficarem no mesmo lugar.
+    // Sprites multi-tile (bw/bh > 1): offset para o top-left = -(bw-1), -(bh-1) em unidades de tile.
+    const tx0 = tileX
+    const ty0 = tileY
     if (tx0 < 0 || tx0 >= pipeline.w || ty0 < 0 || ty0 >= pipeline.h) return
+
+    let drawDx = dx - (bw - 1)
+    let drawDy = dy
+    drawDy += dyElev
 
     const tex = pipeline.texForCanvas?.(texture)
     if (!tex) return
@@ -299,8 +310,8 @@ export class ThingType {
         width: bw,
         height: bh,
         z: tileZ ?? 0,
-        dx,
-        dy: dy + dyElev,
+        dx: drawDx,
+        dy: drawDy,
       })
     }
 

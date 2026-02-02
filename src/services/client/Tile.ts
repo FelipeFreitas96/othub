@@ -13,6 +13,7 @@ import { g_map } from './ClientMap'
 import { Thing } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { ThingTypeManager } from '../things/thingTypeManager'
+import type { LightView } from './LightView'
 
 export const MAX_THINGS = 10
 export const TILE_PIXELS = 32
@@ -323,8 +324,27 @@ export class Tile {
     const self = this
     const viewX = state?.drawX ?? self.x
     const viewY = state?.drawY ?? self.y
+    const TILE_PIXELS = 32
+    const centerPx = (v: number) => v * TILE_PIXELS + TILE_PIXELS / 2
     const { DrawLights } = DrawFlags
     steps.push(() => {
+      // OTC: luz é adicionada no draw da criatura (Creature::draw → lightView->addLightSource(dest + (animationOffset + Point(16,16))*scale)).
+      const lightView = state?.lightView as LightView | null | undefined
+      if (lightView && !(drawFlags & DrawLights)) {
+        if (thing instanceof Item) {
+          const tt = thing.getThingType()
+          if (tt?.hasLight?.()) {
+            const light = tt.getLight()
+            if (light) lightView.addLightSource(centerPx(viewX), centerPx(viewY), light, 1)
+          }
+        } else if (thing instanceof Creature) {
+          const light = thing.getLight()
+          if (light?.intensity > 0) {
+            const off = thing.getDrawOffset()
+            lightView.addLightSource(centerPx(viewX) + off.x, centerPx(viewY) - off.y, light, 1)
+          }
+        }
+      }
       if (drawFlags & DrawLights) {
         thing.drawLight?.(pipeline, viewX, viewY, elev, 0, self.z, undefined)
         return
@@ -364,26 +384,36 @@ export class Tile {
     }
 
     // Draw walking creatures
-    // OTC: tile.cpp L152-156
+    // OTC: tile.cpp L152-156; luz como em Creature::draw → addLightSource(dest + (animationOffset + Point(16,16))*scale)
     for (const creature of this.m_walkingCreatures) {
       const self = this
       const viewX = state?.drawX ?? self.x
       const viewY = state?.drawY ?? self.y
+      const lightView = state?.lightView as LightView | null | undefined
       steps.push(() => {
         pipeline.setDrawOrder(DrawOrder.THIRD)
-        
-        const walkOffset = creature.getWalkOffset()
+
+        const drawOffset = creature.getDrawOffset()
         const creaturePos = creature.getPosition()
         const spriteSize = 32
-        
+
         // OTC: cDest = dest + ((creature->getPosition() - m_position) * spriteSize) + walkOffset
         const posDiffX = ((creaturePos?.x ?? self.x) - self.x) * spriteSize
         const posDiffY = ((creaturePos?.y ?? self.y) - self.y) * spriteSize
-        const pixelOffsetX = posDiffX + walkOffset.x
-        const pixelOffsetY = posDiffY + walkOffset.y
-        
+        const pixelOffsetX = posDiffX + drawOffset.x
+        const pixelOffsetY = posDiffY + drawOffset.y
+
+        if (lightView) {
+          const light = creature.getLight?.()
+          if (light?.intensity > 0) {
+            const px = viewX * spriteSize + spriteSize / 2 + pixelOffsetX
+            const py = viewY * spriteSize + spriteSize / 2 - pixelOffsetY
+            lightView.addLightSource(px, py, light, 1)
+          }
+        }
+
         creature.draw(pipeline, viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true)
-        
+
         pipeline.resetDrawOrder()
       })
     }
@@ -440,12 +470,13 @@ export class Tile {
   /**
    * OTC: Tile::draw(dest, flags, lightView) – m_lastDrawDest = dest; depois ground, common, drawCreature, drawTop.
    */
-  draw(pipeline: DrawPool, drawFlags: number = 0, viewX: number, viewY: number) {
+  /** OTC: Tile::draw(dest, scaleFactor, drawFlags, lightView) – luz é adicionada no draw de cada thing (Creature::draw, etc.). */
+  draw(pipeline: DrawPool, drawFlags: number = 0, viewX: number, viewY: number, lightView?: LightView | null) {
     const things = pipeline.thingsRef?.current
     if (!things) return
 
     this.m_lastDrawDest = { x: viewX, y: viewY }
-    const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY }
+    const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY, lightView: lightView ?? null }
     const steps: Function[] = []
 
     // 1) OTC: for (thing : m_things) { if (!ground && !groundBorder && !onBottom) break; drawThing(thing); updateElevation(thing); }

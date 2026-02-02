@@ -9,7 +9,10 @@ import { Creature } from './Creature'
 import { Tile } from './Tile'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawPoolType } from '../graphics/DrawPool'
+import { g_dispatcher } from '../framework/EventDispatcher'
+import { g_player } from './LocalPlayer'
 import { Thing, MapView } from './types'
+import type { Light } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { Item } from './Item'
 
@@ -42,6 +45,8 @@ export class ClientMap {
   h: number
   m_mapViews: MapView[]
   m_floatingEffect?: boolean
+  /** OTC Map::setLight / getLight – luz global (subterrâneo). */
+  m_light: Light = { intensity: 250, color: 215 }
 
   constructor() {
     this.m_centralPosition = new Position(0, 0, SEA_FLOOR)
@@ -55,16 +60,18 @@ export class ClientMap {
     this.m_mapViews = []
   }
 
-  /** OTC: Map::addMapView(const MapViewPtr& mapView) – map.cpp L88. Registra pipeline em g_drawPool para FOREGROUND_MAP e CREATURE_INFORMATION (OTC usa mesmo atlas). */
+  /** OTC: Map::addMapView(const MapViewPtr& mapView) – map.cpp L88. Registra pipeline; se local player já no mapa, follow. */
   addMapView(mapView: MapView) {
     if (!mapView || this.m_mapViews.includes(mapView)) return
     this.m_mapViews.push(mapView)
-    // @ts-ignore
-    if (mapView.pipeline) {
-      // @ts-ignore
-      g_drawPool.setPool(DrawPoolType.FOREGROUND_MAP, mapView.pipeline)
-      // @ts-ignore
-      g_drawPool.setPool(DrawPoolType.CREATURE_INFORMATION, mapView.pipeline)
+    if ((mapView as any).pipeline) {
+      g_drawPool.setPool(DrawPoolType.FOREGROUND_MAP, (mapView as any).pipeline)
+      g_drawPool.setPool(DrawPoolType.CREATURE_INFORMATION, (mapView as any).pipeline)
+    }
+    const playerId = g_player?.getId?.()
+    if (playerId != null) {
+      const creature = this.getCreatureById(playerId)
+      if (creature) (mapView as any).followCreature?.(creature)
     }
   }
 
@@ -93,11 +100,36 @@ export class ClientMap {
     return this.m_centralPosition.clone()
   }
 
+  /** OTC Map::setCentralPosition – map.cpp L421-448: fix local player when removed from map; notify mapViews onMapCenterChange. */
   setCentralPosition(pos: Position) {
     if (!pos || (pos.x === this.m_centralPosition.x && pos.y === this.m_centralPosition.y && pos.z === this.m_centralPosition.z)) return
-    this.m_centralPosition = pos instanceof Position ? pos.clone() : Position.from(pos)
+    const centralPosition = pos instanceof Position ? pos.clone() : Position.from(pos)
+    this.m_centralPosition = centralPosition
     // @ts-ignore
     if (this.removeUnawareThings) this.removeUnawareThings()
+
+    // OTC: fix local player position when removed from map (too many creatures on tile → no stackpos from server)
+    g_dispatcher.addEvent(() => {
+      const playerId = g_player?.getId?.()
+      if (playerId == null) return
+      const creature = this.getCreatureById(playerId)
+      if (!creature?.getPosition) return
+      const playerPos = creature.getPosition()
+      if (playerPos && playerPos.x === centralPosition.x && playerPos.y === centralPosition.y && playerPos.z === centralPosition.z) return
+      const tile = creature.getTile?.()
+      if (tile && tile.m_things?.includes(creature)) return
+      const oldPos = creature.getPosition()
+      if (oldPos && (oldPos.x !== centralPosition.x || oldPos.y !== centralPosition.y)) {
+        if (!creature.m_removed) creature.onDisappear?.()
+        creature.setPosition(centralPosition)
+        creature.onAppear?.()
+      }
+    })
+
+    for (const mapView of this.m_mapViews) {
+      const oldPos = (mapView as any).getLastCameraPosition?.() ?? null
+      ;(mapView as any).onMapCenterChange?.(centralPosition, oldPos)
+    }
   }
 
   getAwareRange() {
@@ -111,7 +143,7 @@ export class ClientMap {
   }
 
   resetAwareRange() {
-    this.m_awareRange = { left: 8, right: 9, top: 6, bottom: 7 }
+    this.m_awareRange = { left: 8, right: 8, top: 6, bottom: 6 }
     // @ts-ignore
     if (this.removeUnawareThings) this.removeUnawareThings()
   }
@@ -119,6 +151,12 @@ export class ClientMap {
   getFirstAwareFloor() {
     if (this.m_centralPosition.z > SEA_FLOOR) return Math.max(0, this.m_centralPosition.z - AWARE_UNDEGROUND_FLOOR_RANGE)
     return 0
+  }
+
+  getLight(): Light { return { ...this.m_light } }
+  setLight(light: Light) {
+    this.m_light = { ...light }
+    this.m_mapViews.forEach((mv: any) => mv.onGlobalLightChange?.(this.m_light))
   }
 
   getLastAwareFloor() {
@@ -188,6 +226,13 @@ export class ClientMap {
     }
   }
 
+  /** OTC Map::resetLastCamera() – map.cpp L668-672: each mapView->resetLastCamera(). */
+  resetLastCamera() {
+    for (const mapView of this.m_mapViews) {
+      (mapView as any).resetLastCamera?.()
+    }
+  }
+
   /** OTC: Map::notificateTileUpdate(pos, thing, operation) – map.cpp L115-126: if !pos.isMapPosition() return; for mapView mapView->onTileUpdate(pos, thing, op); if thing&&isItem g_minimap.updateTile. */
   notificateTileUpdate(pos: Position, thing: Thing, operation: string) {
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return
@@ -234,6 +279,7 @@ export class ClientMap {
       if (stackPos < 0 || stackPos >= tile.m_things.length) tile.m_things.push(thing)
       else tile.m_things.splice(stackPos, 0, thing)
       this.notificateTileUpdate(position, thing, 'add')
+      ;(thing as any).onAppear?.()
     }
   }
 
@@ -269,7 +315,10 @@ export class ClientMap {
         const idx = tile.m_things.indexOf(thing)
         if (idx !== -1) {
           tile.m_things.splice(idx, 1)
-          if (tile.m_things.length === 0 && tile.m_position) {
+          // Não limpar o tile quando a última coisa removida é criatura: no parseCreatureMove a criatura
+          // será adicionada a este mesmo tile em m_walkingCreatures (updateWalkingTile); se deletarmos o tile,
+          // o cache continua com a ref ao tile antigo e o personagem some durante o walk.
+          if (tile.m_things.length === 0 && tile.m_position && !thing.isCreature?.()) {
             this.cleanTile(tile.m_position)
           }
           found = true
@@ -342,7 +391,7 @@ export class ClientMap {
           // CRITICAL: Apenas inclui na lista de snapshot se a criatura ainda estiver andando
           if (!c.isWalking()) continue
 
-          const off = c.getWalkOffset?.() ?? { x: 0, y: 0 }
+          const off = c.getDrawOffset?.() ?? { x: 0, y: 0 }
           walkingCreatures.push({
             entry: { direction: c.m_direction, walking: true, walkAnimationPhase: c.m_walkAnimationPhase ?? 0 },
             offsetX: off.x,
@@ -406,7 +455,11 @@ export class ClientMap {
     this.m_tiles.clear()
   }
 
+  /** OTC Map::cleanDynamicThings – map.cpp L144-177: followCreature(nullptr) before clearing creatures. */
   cleanDynamicThings() {
+    for (const mapView of this.m_mapViews) {
+      (mapView as any).followCreature?.(null)
+    }
     for (const tile of this.m_tiles.values()) {
       if (tile?.m_things?.length) {
         tile.m_things = tile.m_things.filter((t) => !t.isCreature())
