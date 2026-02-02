@@ -994,11 +994,9 @@ export class ProtocolGameParse {
       }
     }
 
-    // Notify MapViews to update
+    // OTC: view lê direto do mapa; notificar atualização do cache de tiles visíveis
     for (const mapView of g_map.m_mapViews) {
-      if (mapView.setMapState) {
-        mapView.setMapState(g_map.getMapStateForView())
-      }
+      if (mapView.requestVisibleTilesCacheUpdate) mapView.requestVisibleTilesCacheUpdate()
     }
   }
 

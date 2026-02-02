@@ -4,6 +4,14 @@ import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import { DrawPool } from '../graphics/DrawPool'
 
+/** OTC: MapView lê tiles direto do mapa (g_map.getTile). Interface para GameMap delegar. */
+export interface MapSource {
+  getTile(pos: PositionLike): Tile | null
+  getCentralPosition(): Position
+  getAwareRange(): { left: number, right: number, top: number, bottom: number }
+}
+export type PositionLike = Position | { x: number, y: number, z: number }
+
 export class GameMap {
   tiles: Map<string, Tile>
   worldTiles: Map<string, Tile>
@@ -13,8 +21,10 @@ export class GameMap {
   cameraZ: number
   cameraX: number
   cameraY: number
-  range: any
+  range: { left: number, right: number, top: number, bottom: number } | null
   multifloor: boolean = false
+  /** OTC: view usa o mapa como fonte; não existe loadFromOtState no mapview.cpp */
+  sourceMap: MapSource | null = null
 
   constructor() {
     this.tiles = new Map()
@@ -28,6 +38,11 @@ export class GameMap {
     this.range = null
   }
 
+  /** OTC mapview.cpp: view lê do mapa; setSourceMap(g_map). */
+  setSourceMap(map: MapSource | null) {
+    this.sourceMap = map
+  }
+
   _key(x: number, y: number, z: number) {
     return `${x},${y},${z}`
   }
@@ -36,11 +51,25 @@ export class GameMap {
     return `${x},${y},${z}`
   }
 
+  /**
+   * getTile(ix, iy, z): índices de view. OTC mapview.cpp L354-356: tilePos = camera.translated(ix - virtualCenterOffset.x, iy - virtualCenterOffset.y); tilePos.coveredUp(camera.z - iz); g_map.getTile(tilePos).
+   */
   getTile(x: number, y: number, z: number) {
+    if (this.sourceMap) {
+      const r = this.range ?? { left: 8, top: 6 }
+      const vcx = r.left
+      const vcy = r.top
+      const wx = this.cameraX + (x - vcx) + (this.cameraZ - z)
+      const wy = this.cameraY + (y - vcy) + (this.cameraZ - z)
+      return this.sourceMap.getTile({ x: wx, y: wy, z }) ?? null
+    }
     return this.tiles.get(this._key(x, y, z)) || null
   }
 
   getTileWorld(x: number, y: number, z: number) {
+    if (this.sourceMap) {
+      return this.sourceMap.getTile({ x, y, z }) ?? null
+    }
     return this.worldTiles.get(this._wkey(x, y, z)) || null
   }
 
@@ -58,8 +87,8 @@ export class GameMap {
    */
   isCompletelyCovered(tile: Tile, firstFloor: number, types: ThingTypeManager) {
     const checkTile = tile
-    const wx = checkTile?.m_meta?.wx ?? checkTile?.x
-    const wy = checkTile?.m_meta?.wy ?? checkTile?.y
+    const wx = checkTile?.m_position?.x ?? checkTile?.m_meta?.wx ?? checkTile?.x
+    const wy = checkTile?.m_position?.y ?? checkTile?.m_meta?.wy ?? checkTile?.y
     if (!Number.isFinite(wx) || !Number.isFinite(wy)) return false
     let pos: Position = new Position(wx, wy, checkTile.z)
     while (pos.z > firstFloor) {
@@ -90,64 +119,21 @@ export class GameMap {
     return t
   }
 
-  loadFromOtState(state: any, thingsRef: { current: { types: ThingTypeManager } }) {
-    // NOTA: Removido tiles.clear() e worldTiles.clear() para evitar frame preto durante o walk.
-    // O mapa agora é atualizado de forma incremental.
-    
-    this.cameraZ = state?.pos?.z ?? 0
+  /**
+   * OTC mapview.cpp: view só precisa da câmera e do range; tiles vêm de g_map.getTile (setSourceMap).
+   * Não existe loadFromOtState no OTClient.
+   */
+  setCameraFromMap(source: MapSource) {
+    const pos = source.getCentralPosition()
+    const r = source.getAwareRange()
+    this.cameraX = pos.x
+    this.cameraY = pos.y
+    this.cameraZ = pos.z
     this.z = this.cameraZ
-    this.zMin = state?.zMin ?? this.cameraZ
-    this.zMax = state?.zMax ?? this.cameraZ
-    this.range = state?.range || null
-    this.cameraX = state?.pos?.x ?? 0
-    this.cameraY = state?.pos?.y ?? 0
-
-    this.multifloor = !!(this.zMax > this.zMin)
-
-    const types = thingsRef?.current?.types ?? null
-    const floors = state?.floors || { [this.cameraZ]: { tiles: state?.tiles || [] } }
-    
-    // Lista de chaves de tiles que foram atualizados neste ciclo
-    const updatedKeys = new Set<string>()
-
-    for (const [zStr, floor] of Object.entries(floors)) {
-      const z = parseInt(zStr, 10)
-      if (!Number.isFinite(z)) continue
-      const rows = (floor as any)?.tiles || []
-      for (let y = 0; y < rows.length; y++) {
-        for (let x = 0; x < rows[y].length; x++) {
-          const cell = rows[y][x]
-          if (!cell) continue
-          
-          const k = this._key(x, y, z)
-          updatedKeys.add(k)
-          
-          const tile = this.ensureTile(x, y, z)
-          tile.setStack(cell.stack || [], cell, types)
-          
-          const wx = cell.wx
-          const wy = cell.wy
-          if (Number.isFinite(wx) && Number.isFinite(wy)) {
-            // OTC: Tile/Item variation uses WORLD position (m_position), not view position.
-            // Item::updatePatterns() uses m_position.x/y/z for variation.
-            const worldPos: Position = new Position(Number(wx), Number(wy), z)
-            tile.m_position = worldPos
-            for (const thing of tile.m_things) {
-              if (thing?.setPosition) thing.setPosition(worldPos)
-            }
-            const wk = this._wkey(wx, wy, z)
-            this.worldTiles.set(wk, tile)
-          }
-        }
-      }
-    }
-
-    // Remove tiles que não estão mais no estado (fora da área aware)
-    for (const key of this.tiles.keys()) {
-      if (!updatedKeys.has(key)) {
-        this.tiles.delete(key)
-      }
-    }
+    this.range = r
+    this.zMin = Math.max(0, this.cameraZ - 2)
+    this.zMax = Math.min(15, this.cameraZ + 2)
+    this.multifloor = this.zMax > this.zMin
   }
 
   draw(pipeline: DrawPool) {

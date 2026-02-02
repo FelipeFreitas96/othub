@@ -8,6 +8,7 @@
 import { Tile } from './Tile'
 import { getThings } from '../protocol/things'
 import { g_map } from './ClientMap'
+import { g_dispatcher, type ScheduledEventHandle } from '../framework/EventDispatcher'
 import { isFeatureEnabled, getClientVersion } from '../protocol/features'
 import { Outfit } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
@@ -44,11 +45,19 @@ export interface CreatureData {
   unpass?: number
 }
 
+/** Ref set by MapView before g_dispatcher.poll() so Creature can read outfit phases during updateWalkAnimation. */
+let g_creatureThingsRef: { current?: { types?: { getCreature: (id: number) => { getAnimationPhases?: () => number } | null } } } | null = null
+
 export class Creature extends Thing {
   /** OTC: Creature::speedA, speedB, speedC – setados em parseLogin quando GameNewSpeedLaw. */
   static speedA = 0
   static speedB = 0
   static speedC = 0
+
+  /** Set by MapView before poll() so getAnimationPhases() can use outfit ThingType (fixes walk animation flicker). */
+  static setThingsRef(ref: typeof g_creatureThingsRef) {
+    g_creatureThingsRef = ref ?? null
+  }
 
   m_id: number | string
   m_name: string
@@ -91,7 +100,7 @@ export class Creature extends Thing {
   m_removed: boolean
   m_oldPosition: Position | null
   // m_position inherited from Thing
-  m_walkUpdateEvent: ReturnType<typeof setTimeout> | null
+  m_walkUpdateEvent: ScheduledEventHandle | null
   m_passable: boolean
 
   constructor(data: CreatureData) {
@@ -230,7 +239,7 @@ export class Creature extends Thing {
     // If already walking to a DIFFERENT position, complete current walk instantly
     if (this.m_walking) {
       if (this.m_walkUpdateEvent) {
-        clearTimeout(this.m_walkUpdateEvent);
+        this.m_walkUpdateEvent.cancel();
         this.m_walkUpdateEvent = null;
       }
       if (this.m_walkingTile) {
@@ -287,7 +296,7 @@ export class Creature extends Thing {
   // creature.cpp L759-776
   nextWalkUpdate() {
     if (this.m_walkUpdateEvent) {
-      clearTimeout(this.m_walkUpdateEvent);
+      this.m_walkUpdateEvent.cancel();
       this.m_walkUpdateEvent = null;
     }
 
@@ -302,10 +311,13 @@ export class Creature extends Thing {
       self.nextWalkUpdate();
     };
 
-    // OTC: schedules based on walkDuration or addEvent for local player
-    // Use 16ms for smooth 60fps animation, walkDuration for other creatures
-    const interval = this.isCameraFollowing() ? 16 : Math.max(this.m_stepCache.walkDuration || 16, 16);
-    this.m_walkUpdateEvent = setTimeout(action, interval);
+    // OTC creature.cpp L776: isCameraFollowing() ? g_dispatcher.addEvent(action) : g_dispatcher.scheduleEvent(action, walkDuration)
+    if (this.isCameraFollowing()) {
+      g_dispatcher.addEvent(action);
+    } else {
+      const interval = Math.max(this.m_stepCache.walkDuration || 16, 16);
+      this.m_walkUpdateEvent = g_dispatcher.scheduleEvent(action, interval);
+    }
   }
 
   // OTC: void Creature::updateWalk()
@@ -350,7 +362,7 @@ export class Creature extends Thing {
   terminateWalk() {
     // Remove any scheduled walk update
     if (this.m_walkUpdateEvent) {
-      clearTimeout(this.m_walkUpdateEvent);
+      this.m_walkUpdateEvent.cancel();
       this.m_walkUpdateEvent = null;
     }
 
@@ -370,10 +382,8 @@ export class Creature extends Thing {
     this.m_walking = false;
 
     // OTC: m_walkFinishAnimEvent = g_dispatcher.scheduleEvent - reset animation after server beat
-    // Schedule animation phase reset after a small delay
-    const self = this;
-    setTimeout(() => {
-      self.m_walkAnimationPhase = 0;
+    g_dispatcher.scheduleEvent(() => {
+      this.m_walkAnimationPhase = 0;
     }, 50); // Server beat delay
     
     // Notify map that walk terminated
@@ -451,15 +461,11 @@ export class Creature extends Thing {
   }
 
   // OTC: void Creature::updateWalkAnimation()
-  // creature.cpp L665-703
+  // creature.cpp L665-703 – use outfit phases and 0-based cycle to avoid flicker
   updateWalkAnimation() {
-    // Get animation phases from outfit
-    let footAnimPhases = this.getAnimationPhases();
-    if (footAnimPhases > 2) footAnimPhases--; // OTC adjustment for older clients
-    
-    // Looktype has no animations
-    if (footAnimPhases === 0) return;
-    
+    const footAnimPhases = this.getAnimationPhases();
+    if (footAnimPhases <= 0) return;
+
     // Diagonal walk is taking longer than the animation
     if (this.m_walkTimer.ticksElapsed() < this.getStepDuration() && this.m_walkedPixels === TILE_PIXELS) {
       this.m_walkAnimationPhase = 0;
@@ -469,27 +475,25 @@ export class Creature extends Thing {
     const minFootDelay = 20;
     const maxFootDelay = footAnimPhases > 2 ? 80 : 205;
     let footAnimDelay = footAnimPhases;
-    
     if (footAnimDelay > 1) footAnimDelay = Math.floor(footAnimDelay / 1.5);
 
     const walkSpeed = this.m_stepCache.getDuration(this.m_lastStepDirection);
     const footDelay = Math.max(minFootDelay, Math.min(walkSpeed / footAnimDelay, maxFootDelay));
 
     if (this.m_footTimer.ticksElapsed() >= footDelay) {
-      if (this.m_walkAnimationPhase >= footAnimPhases) {
-        this.m_walkAnimationPhase = 1;
-      } else {
-        this.m_walkAnimationPhase++;
-      }
+      this.m_walkAnimationPhase = (this.m_walkAnimationPhase + 1) % footAnimPhases;
       this.m_footTimer.restart();
     }
   }
   
-  /** Get animation phases for current outfit */
+  /** Get animation phases for current outfit (OTC: from g_things / ThingType when available). */
   getAnimationPhases(): number {
-    // Default: most creatures have 2-4 walk frames
-    // TODO: Get from ThingType when available
-    return 4;
+    const lookType = this.m_outfit?.lookType ?? 0
+    if (!lookType) return 4
+    const types = getThings().types
+    const ct = types.getCreature(lookType)
+    const phases = ct?.getAnimationPhases?.()
+    return typeof phases === 'number' && phases > 0 ? phases : 4
   }
 
   // OTC: uint16_t Creature::getStepDuration(const bool ignoreDiagonal, const Otc::Direction dir)

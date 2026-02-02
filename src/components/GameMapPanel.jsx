@@ -26,28 +26,24 @@ export default function GameMapPanel() {
     g_map.addMapView(mapViewRef.current)
     
     if (g_map.center?.x != null) {
-      mapViewRef.current.setMapState(g_map.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
     loadThings(860).then((t) => {
       thingsRef.current = t
       if (mapViewRef.current && g_map.center?.x != null) {
-        mapViewRef.current.setMapState(g_map.getMapStateForView())
+        mapViewRef.current.requestVisibleTilesCacheUpdate()
         mapViewRef.current.draw()
       }
     })
 
     const onMap = () => {
-      const state = g_map.getMapStateForView()
-      mapViewRef.current?.setMapState(state)
       mapViewRef.current?.requestVisibleTilesCacheUpdate()
       mapViewRef.current?.draw()
     }
 
     const onMapMove = () => {
       if (!g_map?.center || !mapViewRef.current) return
-      mapViewRef.current.setMapState(g_map.getMapStateForView())
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 

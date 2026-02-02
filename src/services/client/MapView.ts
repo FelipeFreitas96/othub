@@ -1,11 +1,13 @@
 /**
- * MapView – 1:1 port of OTClient src/client/mapview.h + mapview.cpp
- * Copyright (c) 2010-2020 OTClient; ported to JS for this project.
+ * MapView – port of OTClient src/client/mapview.h + mapview.cpp
+ * Copyright (c) 2010-2026 OTClient; ported to JS for this project.
  *
- * - visibleDimension (Size w,h)
- * - cachedVisibleTiles (draw order: z descending, then diagonal)
- * - updateVisibleTilesCache() – fills cache; calcFirstVisibleFloor, calcLastVisibleFloor
- * - draw() – uses cache, one tile.draw() per cached tile
+ * OTC: não existe loadFromOtState nem setMapState. A view lê tiles direto do mapa (g_map.getTile).
+ * - preLoad(): se m_updateVisibleTiles, updateVisibleTiles(); g_map.updateAttachedWidgets
+ * - updateVisibleTiles(): usa m_posInfo.camera, tilePos = camera.translated(ix - virtualCenterOffset); g_map.getTile(tilePos)
+ * - onTileUpdate(pos, thing, op): se op==CLEAN requestUpdateVisibleTiles; se thing opaque REMOVE m_resetCoveredCache
+ * - onCameraMove(offset): requestUpdateMapPosInfo; se isFollowingCreature updateViewport
+ * - onMapCenterChange(): requestUpdateVisibleTiles
  */
 
 import * as THREE from 'three'
@@ -14,8 +16,8 @@ import { DrawPool, DrawOrder } from '../graphics/DrawPool'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
 import { g_player } from './LocalPlayer'
 import { g_map } from './ClientMap'
+import { g_dispatcher } from '../framework/EventDispatcher'
 import { Position } from './Position'
-import { Creature } from './Creature'
 
 const TILE_PIXELS = 32
 
@@ -33,6 +35,8 @@ export class MapView {
   m_smoothCameraY: number | null
   m_fitAwareArea: boolean
   m_zoomLevel: number
+  /** OTC mapview.cpp L255: m_resetCoveredCache – onTileUpdate(thing opaque REMOVE) */
+  m_resetCoveredCache: boolean = false
   scene: THREE.Scene
   camera: THREE.OrthographicCamera
   renderer: THREE.WebGLRenderer
@@ -81,31 +85,31 @@ export class MapView {
   getCachedFirstVisibleFloor() { return this.m_cachedFirstVisibleFloor }
   getCachedLastVisibleFloor() { return this.m_cachedLastVisibleFloor }
 
+  /** OTC mapview.cpp: requestUpdateVisibleTiles(). Não existe setMapState no OTClient – view lê direto do mapa. */
   requestVisibleTilesCacheUpdate() {
     this.m_mustUpdateVisibleTilesCache = true
   }
 
-  /** OTC MapView::onCameraMove(const Point& offset) – mapview.cpp L518-524: requestUpdateMapPosInfo(); if isFollowingCreature() updateViewport(direction). */
-  onCameraMove(offset: { x: number, y: number }) {
+  /** OTC mapview.cpp L518-524: onCameraMove – requestUpdateMapPosInfo(); if isFollowingCreature() updateViewport(direction). */
+  onCameraMove(_offset: { x: number, y: number }) {
     this.requestVisibleTilesCacheUpdate()
   }
 
-  /** OTC MapView::onTileUpdate(pos, thing, operation) – mapview.cpp L544-555: if thing&&isOpaque&&op==REMOVE m_resetCoveredCache; if op==CLEAN destroyHighlightTile, requestUpdateVisibleTiles. */
+  /** OTC mapview.cpp L544-555: onTileUpdate – if thing&&isOpaque&&op==REMOVE m_resetCoveredCache; if op==CLEAN requestUpdateVisibleTiles. */
   onTileUpdate(pos: Position, thing: any, operation: string) {
+    if (thing?.isOpaque?.() && operation === 'remove') this.m_resetCoveredCache = true
     if (operation === 'clean') this.requestVisibleTilesCacheUpdate()
   }
 
-  setMapState(state: any) {
-    if (!state) return
-    this.map.loadFromOtState(state, this.thingsRef)
-    this.pipeline.setMap(this.map)
-    this.requestVisibleTilesCacheUpdate()
-  }
-
   /**
-   * Simplified port of OTC MapView::updateVisibleTiles() (opentibiabr/otclient mapview.cpp ~L294–L414).
+   * OTC mapview.cpp L286-426: updateVisibleTiles() – usa camera, tilePos = camera.translated(ix - virtualCenterOffset); g_map.getTile(tilePos).
+   * Tiles vêm do mapa (sourceMap = g_map); não existe loadFromOtState.
    */
   updateVisibleTilesCache() {
+    if (!g_map) return
+    if (!this.map.sourceMap) this.map.setSourceMap(g_map)
+    this.map.setCameraFromMap(g_map)
+
     const things = this.thingsRef?.current
     const types = things?.types
     this.m_cachedFirstVisibleFloor = this.pipeline.calcFirstVisibleFloor?.(types) ?? this.map.cameraZ ?? 7
@@ -119,6 +123,8 @@ export class MapView {
     const h = this.h
     const firstFloor = this.m_cachedFirstVisibleFloor
     const lastFloor = this.m_cachedLastVisibleFloor
+    const resetCoveredCache = this.m_resetCoveredCache
+    this.m_resetCoveredCache = false
 
     for (let z = lastFloor; z >= firstFloor; z--) {
       const numDiagonals = w + h - 1
@@ -129,7 +135,7 @@ export class MapView {
           if (!tile) continue
           const onCameraFloor = z === this.map.cameraZ
           if (!onCameraFloor && !tile.isDrawable()) continue
-          if (tile.isCompletelyCovered(firstFloor, false, this.map, types)) continue;
+          if (tile.isCompletelyCovered(firstFloor, resetCoveredCache, this.map, types)) continue
 
           this.m_cachedVisibleTiles.push({ z, tile, x: ix, y: iy })
         }
@@ -145,128 +151,51 @@ export class MapView {
     this.m_mustUpdateVisibleTilesCache = false
   }
 
+  /**
+   * OTC mapview.cpp preLoad(): if (m_updateVisibleTiles) updateVisibleTiles(); g_map.updateAttachedWidgets.
+   * draw(): chama preLoad logic + drawFloor.
+   * OTC: não tem updateWalkStateOnly – o walk é atualizado via g_dispatcher.addEvent (Creature::nextWalkUpdate agenda para o próximo frame).
+   */
   draw() {
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-    
-    // Sincronização com o g_map.center (posição do servidor)
+    // OTC: g_dispatcher.poll() – executa eventos addEvent (ex.: Creature::nextWalkUpdate do local player)
+    g_dispatcher.poll()
+
+    if (g_map) {
+      if (!this.map.sourceMap) this.map.setSourceMap(g_map)
+      this.map.setCameraFromMap(g_map)
+      const center = g_map.getCentralPosition()
+      if (this._lastCenter == null || this._lastCenter.x !== center.x || this._lastCenter.y !== center.y || this._lastCenter.z !== center.z) {
+        this.requestVisibleTilesCacheUpdate()
+        this._lastCenter = center.clone()
+      }
+    }
+
+    if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
+
+    let cameraOffsetX = 0
+    let cameraOffsetY = 0
     if (g_map?.center) {
       const pos = g_map.center as Position
-      
-      // Atualiza o estado do mapa apenas se houver mudança real de posição ou dados
-      const last = this._lastCenter
-      if (!last || last.x !== pos.x || last.y !== pos.y || last.z !== pos.z) {
-        this._lastCenter = pos.clone()
-        
-        // Em vez de setMapState (que reconstrói tudo), atualizamos apenas os dados necessários
-        // para o pipeline de renderização saber onde a câmera está.
-        this.map.cameraX = pos.x
-        this.map.cameraY = pos.y
-        this.map.cameraZ = pos.z
-        
-        // Se o g_map tiver um estado novo, carregamos
-        const mapState = g_map.getMapStateForView()
-        if (mapState) {
-          this.map.loadFromOtState(mapState, this.thingsRef)
-        }
-        
-        this.requestVisibleTilesCacheUpdate()
-      }
-
-      // Calcula o offset da câmera baseado na animação de walk do jogador
-      let cameraOffsetX = 0
-      let cameraOffsetY = 0
-      
       const playerId = g_player?.getId?.()
       const creature = playerId != null ? g_map.getCreatureById?.(playerId) : null
-      
       if (creature?.m_walking && creature.m_lastStepToPosition && creature.getWalkOffset) {
         const off = creature.getWalkOffset()
-        
-        // OTC: visual position is target + offset
-        // Tibia: X aumenta direita, Y aumenta baixo.
-        // Three.js: X aumenta direita, Y aumenta cima.
         const visualX = creature.m_lastStepToPosition.x + (off.x / TILE_PIXELS)
         const visualY = creature.m_lastStepToPosition.y + (off.y / TILE_PIXELS)
-        
-        // Offset da câmera em unidades de tile
         cameraOffsetX = visualX - pos.x
         cameraOffsetY = -(visualY - pos.y)
-        
-        // Segurança contra valores inválidos que causam tela preta
         if (!Number.isFinite(cameraOffsetX)) cameraOffsetX = 0
         if (!Number.isFinite(cameraOffsetY)) cameraOffsetY = 0
       }
-      
       this.camera.position.set(cameraOffsetX, cameraOffsetY, 10)
     }
-    
-    if (this.m_mustUpdateVisibleTilesCache) this.updateVisibleTilesCache()
-    
-    // Inicia o frame - limpa os tileGroups (meshes Three.js)
+
     this.pipeline.beginFrame()
-    
-    // Desenha os tiles do cache (inclui m_walkingCreatures de cada tile)
     for (const entry of this.m_cachedVisibleTiles) {
       entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y)
     }
-    
-    // Atualiza estado de walk para criaturas conhecidas (desenho é feito pelo Tile)
-    this._updateWalkingCreatures()
-    
-    // Finaliza o frame - executa as ações de desenho (cria meshes)
     this.pipeline.endFrame()
-    
-    // Renderiza a cena Three.js
     this.render()
-  }
-
-  /**
-   * Update walk state and DRAW walking creatures.
-   * Since GameMap tiles are separate from g_map tiles, we must draw walking creatures here.
-   */
-  _updateWalkingCreatures() {
-    if (!g_map?.m_knownCreatures) return
-    
-    const cameraX = this.map.cameraX ?? 0
-    const cameraY = this.map.cameraY ?? 0
-    const cameraZ = this.map.cameraZ ?? 7
-    
-    // Use aware range offsets (not half of width/height)
-    // Aware range: left=8, right=9, top=6, bottom=7
-    // View coordinate (0,0) = world coordinate (center.x - left, center.y - top)
-    const range = g_map?.getAwareRange?.() ?? { left: 8, top: 6 }
-    const offsetX = range.left  // 8
-    const offsetY = range.top   // 6
-    
-    // Get local player ID to handle camera compensation
-    const localPlayerId = g_player?.getId?.()
-    
-    for (const creature of g_map.m_knownCreatures.values()) {
-      if (!creature.m_walking) continue
-      
-      // Update walk state (animation, offset, etc.)
-      creature.updateWalk()
-      
-      // Get creature position and walk offset
-      const pos = creature.getPosition()
-      if (!pos || pos.z !== cameraZ) continue
-      
-      const walkOffset = creature.getWalkOffset()
-      
-      // Convert world position to view position
-      // viewX = worldX - (cameraX - offsetX) = worldX - cameraX + offsetX
-      const viewX = pos.x - cameraX + offsetX
-      const viewY = pos.y - cameraY + offsetY
-      
-      // Check if creature is within visible area (with some margin for walk offset)
-      if (viewX < -1 || viewX >= this.w + 1 || viewY < -1 || viewY >= this.h + 1) continue
-      
-      // Draw the walking creature with walkOffset for smooth interpolation
-      // Camera follows the player's visual position, so walkOffset is needed for all creatures
-      this.pipeline.setDrawOrder(3) // DrawOrder.THIRD
-      creature.draw(this.pipeline, viewX, viewY, 0, 0, pos.z, walkOffset.x, walkOffset.y, true)
-      this.pipeline.resetDrawOrder()
-    }
   }
 
   /**

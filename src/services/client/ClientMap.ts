@@ -444,28 +444,6 @@ export class ClientMap {
   getCreature(id: number | string) { return this.getCreatureById(id) }
   upsertCreature(creature: Creature) { this.addCreature(creature) }
   key(x: number, y: number, z: number) { return this._key(x, y, z) }
-
-  /**
-   * Estado para a view (GameMap.loadFromOtState). Fonte única: dados do mapStore; sem DTO no protocolo.
-   */
-  getMapStateForView() {
-    const pos = this.getCentralPosition()
-    const zMin = Math.max(0, pos.z - 2)
-    const zMax = Math.min(15, pos.z + 2)
-    const snap = this.snapshotFloors(zMin, zMax)
-    const current = snap.floors?.[pos.z] ?? this.snapshotFloor(pos.z)
-    return {
-      pos: { ...pos },
-      w: current.w,
-      h: current.h,
-      tiles: current.tiles,
-      floors: snap.floors,
-      zMin: snap.zMin,
-      zMax: snap.zMax,
-      range: { ...this.m_awareRange },
-      ts: Date.now(),
-    }
-  }
 }
 
 /** Singleton: instância única do mapa (OTC: g_map). */

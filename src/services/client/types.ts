@@ -26,5 +26,4 @@ export interface MapView {
     onCameraMove(offset: { x: number, y: number }): void
     onTileUpdate(pos: Position, thing: Thing, operation: string): void
     requestVisibleTilesCacheUpdate?(): void
-    setMapState?(state: any): void
 }
