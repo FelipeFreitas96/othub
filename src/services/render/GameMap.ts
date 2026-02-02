@@ -1,6 +1,6 @@
 import { Tile } from '../client/Tile'
+import { Position } from '../client/Position'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
-import { Position } from '../client/types'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import { DrawPool } from '../graphics/DrawPool'
 
@@ -47,8 +47,8 @@ export class GameMap {
   /**
    * OTC Position::coveredUp() – tile above (one floor up).
    */
-  coveredUp(pos: Position) {
-    return { x: pos.x + 1, y: pos.y + 1, z: pos.z - 1 }
+  coveredUp(pos: Position): Position {
+    return new Position(pos.x + 1, pos.y + 1, pos.z - 1)
   }
 
   /**
@@ -61,7 +61,7 @@ export class GameMap {
     const wx = checkTile?.m_meta?.wx ?? checkTile?.x
     const wy = checkTile?.m_meta?.wy ?? checkTile?.y
     if (!Number.isFinite(wx) || !Number.isFinite(wy)) return false
-    let pos = { x: wx, y: wy, z: checkTile.z }
+    let pos: Position = new Position(wx, wy, checkTile.z)
     while (pos.z > firstFloor) {
       pos = this.coveredUp(pos)
       if (pos.z < firstFloor) break
@@ -128,6 +128,13 @@ export class GameMap {
           const wx = cell.wx
           const wy = cell.wy
           if (Number.isFinite(wx) && Number.isFinite(wy)) {
+            // OTC: Tile/Item variation uses WORLD position (m_position), not view position.
+            // Item::updatePatterns() uses m_position.x/y/z for variation.
+            const worldPos: Position = new Position(Number(wx), Number(wy), z)
+            tile.m_position = worldPos
+            for (const thing of tile.m_things) {
+              if (thing?.setPosition) thing.setPosition(worldPos)
+            }
             const wk = this._wkey(wx, wy, z)
             this.worldTiles.set(wk, tile)
           }

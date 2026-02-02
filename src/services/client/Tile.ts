@@ -321,10 +321,12 @@ export class Tile {
   _drawThing(thing: Thing, pipeline: DrawPool, drawFlags: number, drawElevationPx: number, steps: Function[], state?: any) {
     const elev = drawElevationPx
     const self = this
+    const viewX = state?.drawX ?? self.x
+    const viewY = state?.drawY ?? self.y
     const { DrawLights } = DrawFlags
     steps.push(() => {
       if (drawFlags & DrawLights) {
-        thing.drawLight?.(pipeline, self.x, self.y, elev, 0, self.z, undefined)
+        thing.drawLight?.(pipeline, viewX, viewY, elev, 0, self.z, undefined)
         return
       }
       if (thing?.isSingleGround?.()) pipeline.setDrawOrder(DrawOrder.FIRST)
@@ -332,7 +334,7 @@ export class Tile {
       // @ts-ignore
       else if (thing?.isEffect?.() && pipeline.isDrawingEffectsOnTop?.()) pipeline.setDrawOrder(DrawOrder.FOURTH)
       else pipeline.setDrawOrder(DrawOrder.THIRD)
-      thing.draw(pipeline, self.x, self.y, elev, 0, self.z)
+      thing.draw(pipeline, viewX, viewY, elev, 0, self.z)
       if (state) self.updateElevation(thing, state)
       pipeline.resetDrawOrder()
     })
@@ -365,6 +367,8 @@ export class Tile {
     // OTC: tile.cpp L152-156
     for (const creature of this.m_walkingCreatures) {
       const self = this
+      const viewX = state?.drawX ?? self.x
+      const viewY = state?.drawY ?? self.y
       steps.push(() => {
         pipeline.setDrawOrder(DrawOrder.THIRD)
         
@@ -373,15 +377,12 @@ export class Tile {
         const spriteSize = 32
         
         // OTC: cDest = dest + ((creature->getPosition() - m_position) * spriteSize) + walkOffset
-        // Position difference between creature's logical position and this tile (in pixels)
         const posDiffX = ((creaturePos?.x ?? self.x) - self.x) * spriteSize
         const posDiffY = ((creaturePos?.y ?? self.y) - self.y) * spriteSize
-        
-        // Total pixel offset = position difference + walk animation offset
         const pixelOffsetX = posDiffX + walkOffset.x
         const pixelOffsetY = posDiffY + walkOffset.y
         
-        creature.draw(pipeline, self.x, self.y, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true)
+        creature.draw(pipeline, viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true)
         
         pipeline.resetDrawOrder()
       })
@@ -399,11 +400,13 @@ export class Tile {
     state.drawElevationPx = 0
 
     if (drawFlags & DrawEffects && this.m_effects.length > 0) {
+      const viewX = state?.drawX ?? this.x
+      const viewY = state?.drawY ?? this.y
       for (const effect of this.m_effects) {
         const self = this
         steps.push(() => {
           pipeline.setDrawOrder(DrawOrder.FOURTH)
-          effect.draw?.(pipeline, self.x, self.y, 0, 0, self.z)
+          effect.draw?.(pipeline, viewX, viewY, 0, 0, self.z)
           pipeline.resetDrawOrder()
         })
       }
