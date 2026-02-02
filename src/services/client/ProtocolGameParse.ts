@@ -22,6 +22,7 @@ import {
   setExpertPvpMode,
 } from './Game'
 import { Creature } from './Creature'
+import { Player } from './Player'
 import { g_dispatcher } from '../framework/EventDispatcher'
 import { ThingAttr } from '../things/thingType'
 import { SkillEnum, MagicEffectsTypeEnum, MessageModeEnum } from './Const'
@@ -125,22 +126,58 @@ export class ProtocolGameParse {
     return { lookType: 0, head: 0, body: 0, legs: 0, feet: 0, addons: 0, lookTypeEx }
   }
 
-  // 1:1 protocolgameparse.cpp getCreature (L3836)
+  /** OTC: Proto::UnknownCreature, OutdatedCreature, Creature (turn). */
+  static readonly Proto = {
+    UnknownCreature: 97,
+    OutdatedCreature: 98,
+    Creature: 99,
+  } as const
+
+  /** OTC: Proto::CreatureType* for clientVersion >= 910. */
+  static readonly CreatureType = {
+    Player: 0,
+    Monster: 1,
+    Npc: 2,
+    Hidden: 3,
+    SummonOwn: 4,
+    SummonOther: 5,
+  } as const
+
+  /** OTC: PlayerStartId/EndId, MonsterStartId/EndId – used when clientVersion < 910 to derive creature type from id. */
+  static readonly ProtoIdRange = {
+    PlayerStartId: 0x10000000,
+    PlayerEndId: 0x20000000,
+    MonsterStartId: 0x40000000,
+    MonsterEndId: 0x50000000,
+  } as const
+
+  /** OTC: addCreatureIcon(msg, creatureId) – consumes creature icon data from message. Stub: no-op. */
+  addCreatureIcon(_msg: InputMessage, _creatureId: number) {
+    // Consume bytes if protocol sends icon data (e.g. clientVersion >= 1281)
+  }
+
+  /** OTC: getPaperdoll(msg) – reads one paperdoll entry. Stub: no-op (GameCreaturePaperdoll). */
+  getPaperdoll(_msg: InputMessage): unknown {
+    return {}
+  }
+
+  // 1:1 ProtocolGame::getCreature – protocolgameparse.cpp
   getCreature(msg: InputMessage, type: number): Creature | null {
+    if (type === 0) type = msg.getU16()
+
     const clientVersion = g_game.getClientVersion()
-    const UNKNOWN = 97, OUTDATED = 98, CREATURE_TURN = 99
-
+    const { Proto, CreatureType, ProtoIdRange } = ProtocolGameParse
     let creature: Creature | null = null
-    const known = type !== UNKNOWN
+    const known = type !== Proto.UnknownCreature
 
-    if (type === OUTDATED || type === UNKNOWN) {
+    if (type === Proto.OutdatedCreature || type === Proto.UnknownCreature) {
       if (known) {
-        // OutdatedCreature: server says creature is known
         const creatureId = msg.getU32()
         creature = g_map.getCreatureById(creatureId) as Creature | null
-        // Desync is normal - creature might have been removed
+        if (!creature) {
+          console.warn('ProtocolGame::getCreature: server said that a creature is known, but it\'s not')
+        }
       } else {
-        // UnknownCreature: new creature
         const removeId = msg.getU32()
         const id = msg.getU32()
 
@@ -150,14 +187,55 @@ export class ProtocolGameParse {
           g_map.removeCreatureById(removeId)
         }
 
-        const name = msg.getString()
+        let creatureType: number
+        if (clientVersion >= 910) {
+          creatureType = msg.getU8()
+        } else {
+          if (id >= ProtoIdRange.PlayerStartId && id < ProtoIdRange.PlayerEndId) creatureType = CreatureType.Player
+          else if (id >= ProtoIdRange.MonsterStartId && id < ProtoIdRange.MonsterEndId) creatureType = CreatureType.Monster
+          else creatureType = CreatureType.Npc
+        }
+
+        let masterId = 0
+        if (clientVersion >= 1281 && creatureType === CreatureType.SummonOwn) {
+          masterId = msg.getU32()
+          if (Number(g_player.getId()) !== masterId) creatureType = CreatureType.SummonOther
+        }
+
+        const name = g_game.formatCreatureName(msg.getString())
 
         if (!creature) {
-          creature = new Creature({ id, name })
-          creature.onCreate?.()
-          g_map.addCreature(creature)
-        } else {
+          if (
+            Number(id) === Number(g_player.getId()) ||
+            (creatureType === CreatureType.Player && !g_player.getId() && name === g_player.getName())
+          ) {
+            creature = g_player
+          } else {
+            switch (creatureType) {
+              case CreatureType.Player:
+                creature = new Player()
+                break
+              case CreatureType.Npc:
+                creature = new Creature({ id, name })
+                break
+              case CreatureType.Hidden:
+              case CreatureType.Monster:
+              case CreatureType.SummonOwn:
+              case CreatureType.SummonOther:
+                creature = new Creature({ id, name })
+                break
+              default:
+                console.warn('ProtocolGame::getCreature: creature type is invalid')
+            }
+            if (creature) creature.onCreate?.()
+          }
+        }
+
+        if (creature) {
+          creature.setId(id)
           creature.setName(name)
+          creature.setMasterId(masterId)
+          g_map.addCreature(creature)
         }
       }
 
@@ -166,51 +244,96 @@ export class ProtocolGameParse {
       const outfit = this.getOutfit(msg)
       const light = { intensity: msg.getU8(), color: msg.getU8() }
       const speed = msg.getU16()
+
+      if (clientVersion >= 1281) this.addCreatureIcon(msg, creature?.getId() as number)
+
       const skull = msg.getU8()
       const shield = msg.getU8()
-      const emblem = isFeatureEnabled('GameCreatureEmblems') && !known ? msg.getU8() : 0
-      const unpass = (clientVersion >= 854) ? msg.getU8() : 1
+
+      let emblem = 0
+      let creatureTypeMark = 0
+      let icon = 0
+      let unpass = true
+
+      if (isFeatureEnabled('GameCreatureEmblems') && !known) emblem = msg.getU8()
+      if (isFeatureEnabled('GameThingMarks')) creatureTypeMark = msg.getU8()
+
+      let masterId = 0
+      if (clientVersion >= 1281) {
+        if (creatureTypeMark === CreatureType.SummonOwn) {
+          masterId = msg.getU32()
+          if (Number(g_player.getId()) !== masterId) creatureTypeMark = CreatureType.SummonOther
+        } else if (creatureTypeMark === CreatureType.Player) {
+          const vocationId = msg.getU8()
+          if (creature && creature.isPlayer?.()) (creature as Player).setVocation(vocationId)
+        }
+      }
+
+      if (isFeatureEnabled('GameCreatureIcons')) icon = msg.getU8()
+      if (isFeatureEnabled('GameThingMarks')) {
+        const mark = msg.getU8()
+        if (clientVersion < 1281) msg.getU16()
+        if (creature) {
+          if (mark === 0xff) (creature as any).hideStaticSquare?.()
+          else (creature as any).showStaticSquare?.(mark)
+        }
+      }
+      if (clientVersion >= 1281) msg.getU8()
+      if (clientVersion >= 854) unpass = msg.getU8() !== 0
+      if (isFeatureEnabled('GameCreaturePaperdoll')) {
+        const size = msg.getU8()
+        for (let i = 0; i < size; i++) {
+          const paperdoll = this.getPaperdoll(msg)
+          if (creature) (creature as any).attachPaperdoll?.(paperdoll)
+        }
+      }
+      let shader = ''
+      if (isFeatureEnabled('GameCreatureShader')) shader = msg.getString()
+      const attachedEffectList: number[] = []
+      if (isFeatureEnabled('GameCreatureAttachedEffect')) {
+        const listSize = msg.getU8()
+        for (let i = 0; i < listSize; i++) attachedEffectList.push(msg.getU16())
+      }
 
       if (creature) {
         creature.setHealthPercent(healthPercent)
-        creature.setDirection(direction)
+        creature.turn(direction)
         creature.setOutfit(outfit)
         creature.setSpeed(speed)
         creature.setSkull(skull)
         creature.setShield(shield)
-        creature.setLight(light)
         creature.setPassable(!unpass)
+        creature.setLight(light)
+        creature.setMasterId(masterId)
+          ; (creature as any).setShader?.(shader)
+          ; (creature as any).clearTemporaryAttachedEffects?.()
+        for (const effectId of attachedEffectList) {
+          ; (creature as any).attachEffect?.(effectId)
+        }
         if (emblem > 0) creature.setEmblem(emblem)
+        if (creatureTypeMark > 0) (creature as any).setType?.(creatureTypeMark)
+        if (icon > 0) (creature as any).setIcon?.(icon)
+        if (creature === g_player && !g_player.isKnown()) g_player.setKnown(true)
       }
-    } else if (type === CREATURE_TURN) {
-      // CreatureTurn: just turn direction
+    } else if (type === Proto.Creature) {
       const creatureId = msg.getU32()
       creature = g_map.getCreatureById(creatureId) as Creature | null
-      // Desync is normal - creature might have been removed
+      if (!creature) console.warn('ProtocolGame::getCreature: invalid creature')
 
       const direction = msg.getU8()
-      if (creature) {
-        creature.setDirection(direction)
-      }
+      if (creature) creature.turn(direction)
 
       if (clientVersion >= 953) {
-        const unpass = msg.getU8()
-        if (creature) {
-          creature.setPassable(!unpass)
-        }
+        const unpass = msg.getU8() !== 0
+        if (creature) creature.setPassable(!unpass)
       }
     } else {
       throw new Error('ProtocolGame::getCreature: invalid creature opcode')
     }
 
-    // If this is the local player, set camera following
-    if (creature) {
-      const playerId = g_player.getId()
-      if (playerId != null && creature.getId() === playerId) {
-        creature.setCameraFollowing(true)
-      }
+    if (creature && g_player.getId() != null && Number(creature.getId()) === Number(g_player.getId())) {
+      creature.setCameraFollowing(true)
     }
-
     return creature
   }
 
@@ -219,6 +342,7 @@ export class ProtocolGameParse {
   }
 
   // 1:1 protocolgameparse.cpp getMappedThing (L3808)
+  // When lookup by (pos, stackpos) fails (stack order differs client vs server), fallback: single creature on tile or local player on that tile.
   getMappedThing(msg: InputMessage): Thing | null {
     const x = msg.getU16()
     if (x !== 0xffff) {
@@ -227,25 +351,19 @@ export class ProtocolGameParse {
       const stackpos = msg.getU8()
       const pos = new Position(x, y, z)
       const thing = g_map.getThing(pos, stackpos)
-      if (!thing) {
-        // Common desync - tile might not have the thing at expected stackpos
-        // Try to find creature at this position as fallback
-        const tile = g_map.getTile(pos)
-        if (tile) {
-          // Try to find any creature on this tile
-          for (const t of tile.m_things) {
-            if (t?.isCreature?.()) return t
-          }
-        }
-        // Desync is normal during fast movement - silence these warnings
+      if (thing) return thing
+      const tile = g_map.getTile(pos)
+      if (tile?.m_things?.length) {
+        const creatures = tile.m_things.filter((t) => t.isCreature?.())
+        if (creatures.length === 1) return creatures[0]
+        if (tile.m_things.some((t) => t === g_player)) return g_player
       }
-      return thing
+    } else {
+      const creatureId = msg.getU32()
+      const thing = g_map.getCreatureById(creatureId)
+      if (thing) return thing
     }
-
-    const creatureId = msg.getU32()
-    const thing = g_map.getCreatureById(creatureId)
-    // Desync is normal - creature might have been removed
-    return thing as Thing | null
+    return null
   }
 
   // 1:1 protocolgameparse.cpp getThing (L3794)
@@ -320,107 +438,107 @@ export class ProtocolGameParse {
         }
 
         switch (opcode) {
-        case GAME_SERVER_OPCODES.GameServerPlayerData:
+          case GAME_SERVER_OPCODES.GameServerPlayerData:
             this.parsePlayerStats(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerPlayerSkills:
+          case GAME_SERVER_OPCODES.GameServerPlayerSkills:
             this.parsePlayerSkills(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerTalk:
+          case GAME_SERVER_OPCODES.GameServerTalk:
             this.parseTalk(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerTextMessage:
+          case GAME_SERVER_OPCODES.GameServerTextMessage:
             this.parseTextMessage(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerGraphicalEffect:
+          case GAME_SERVER_OPCODES.GameServerGraphicalEffect:
             this.parseMagicEffect(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerAmbient:
+          case GAME_SERVER_OPCODES.GameServerAmbient:
             this.parseWorldLight(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerTakeScreenshot:
+          case GAME_SERVER_OPCODES.GameServerTakeScreenshot:
             this.parseTakeScreenshot(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerPlayerState:
+          case GAME_SERVER_OPCODES.GameServerPlayerState:
             this.parsePlayerState(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerSetInventory:
+          case GAME_SERVER_OPCODES.GameServerSetInventory:
             this.parseAddInventoryItem(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerDeleteInventory:
+          case GAME_SERVER_OPCODES.GameServerDeleteInventory:
             this.parseRemoveInventoryItem(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerFullMap:
+          case GAME_SERVER_OPCODES.GameServerFullMap:
             this.parseMapDescription(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerMapTopRow: {
+          case GAME_SERVER_OPCODES.GameServerMapTopRow: {
             this.parseMapMoveNorth(msg)
             break
-        }
+          }
 
-        case GAME_SERVER_OPCODES.GameServerMapRightRow: {
+          case GAME_SERVER_OPCODES.GameServerMapRightRow: {
             this.parseMapMoveEast(msg)
             break
-        }
+          }
 
-        case GAME_SERVER_OPCODES.GameServerMapBottomRow: {
+          case GAME_SERVER_OPCODES.GameServerMapBottomRow: {
             this.parseMapMoveSouth(msg)
             break
-        }
+          }
 
-        case GAME_SERVER_OPCODES.GameServerMapLeftRow: {
+          case GAME_SERVER_OPCODES.GameServerMapLeftRow: {
             this.parseMapMoveWest(msg)
             break
-        }
+          }
 
-        case GAME_SERVER_OPCODES.GameServerMoveCreature:
+          case GAME_SERVER_OPCODES.GameServerMoveCreature:
             this.parseCreatureMove(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerOpenContainer:
+          case GAME_SERVER_OPCODES.GameServerOpenContainer:
             this.parseOpenContainer(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerCloseContainer:
+          case GAME_SERVER_OPCODES.GameServerCloseContainer:
             this.parseCloseContainer(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerCreatureHealth:
+          case GAME_SERVER_OPCODES.GameServerCreatureHealth:
             this.parseCreatureHealth(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerCancelWalk:
+          case GAME_SERVER_OPCODES.GameServerCancelWalk:
             this.parseCancelWalk(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerWalkWait:
+          case GAME_SERVER_OPCODES.GameServerWalkWait:
             this.parseWalkWait(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerUpdateTile:
+          case GAME_SERVER_OPCODES.GameServerUpdateTile:
             this.parseUpdateTile(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerCreateOnMap:
+          case GAME_SERVER_OPCODES.GameServerCreateOnMap:
             this.parseTileAddThing(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerChangeOnMap:
+          case GAME_SERVER_OPCODES.GameServerChangeOnMap:
             this.parseTileTransformThing(msg)
             break
 
-        case GAME_SERVER_OPCODES.GameServerDeleteOnMap:
+          case GAME_SERVER_OPCODES.GameServerDeleteOnMap:
             this.parseTileRemoveThing(msg)
             break
 
@@ -465,17 +583,17 @@ export class ProtocolGameParse {
             await connection.send(new Uint8Array([GAME_CLIENT_OPCODES.GameClientPingBack]))
             break
 
-        case GAME_SERVER_OPCODES.GameServerLoginOrPendingState:
+          case GAME_SERVER_OPCODES.GameServerLoginOrPendingState:
             this.parseLogin(msg)
             await connection.send(new Uint8Array([GAME_CLIENT_OPCODES.GameClientEnterGame]))
             break
 
-        case GAME_SERVER_OPCODES.GameServerLoginSuccess:
+          case GAME_SERVER_OPCODES.GameServerLoginSuccess:
             this.parseLogin(msg)
             await connection.send(new Uint8Array([GAME_CLIENT_OPCODES.GameClientEnterGame]))
             break
 
-        case GAME_SERVER_OPCODES.GameServerEnterGame:
+          case GAME_SERVER_OPCODES.GameServerEnterGame:
             this.parseLogin(msg)
             if (typeof window !== 'undefined') (window as any).__gameConnection = connection
             resolveOnce({
@@ -974,36 +1092,18 @@ export class ProtocolGameParse {
     const newPos = this.getPosition(msg)
 
     if (!thing || !thing.isCreature()) {
-      // Desync is normal - creature might have moved or been removed
+      console.error("ProtocolGame::parseCreatureMove: no creature found to move");
       return
     }
 
     const creature = thing as Creature
-    const oldPos = creature.getPosition()
+    if (!g_map.removeThing(thing)) {
+      console.error("ProtocolGame::parseCreatureMove: unable to remove creature");
+      return
+    }
 
-    // Try to remove, but don't fail if already removed (desync)
-    g_map.removeThing(thing)
-
-    // OTC: creature->allowAppearWalk() - allows walk animation on next position change
     creature.allowAppearWalk()
-
-    // Add creature to new position (this triggers onPositionChange -> walk)
     g_map.addThing(thing, newPos, -1)
-    
-    // OTC: The walk is triggered by onPositionChange when allowAppearWalk is set
-    // We need to call walk here since our addThing doesn't trigger onPositionChange
-    if (oldPos && creature.m_allowAppearWalk) {
-      creature.m_allowAppearWalk = false
-      creature.walk(oldPos, newPos)
-      if (creature.isCameraFollowing()) {
-        g_map.notificateCameraMove(creature.getDrawOffset())
-      }
-    }
-
-    // OTC: view lê direto do mapa; notificar atualização do cache de tiles visíveis
-    for (const mapView of g_map.m_mapViews) {
-      if (mapView.requestVisibleTilesCacheUpdate) mapView.requestVisibleTilesCacheUpdate()
-    }
   }
 
   setTileDescriptionAt(msg: InputMessage, tilePos: Position) {
@@ -1060,7 +1160,6 @@ export class ProtocolGameParse {
       return
     }
 
-    // Get position and stackPos from the thing (OTC: thing->getServerPosition(), thing->getStackPos())
     const pos = thing.isCreature() ? (thing as Creature).getPosition() : null
     const stackPos = pos ? g_map.getThingStackPos(pos, thing) : -1
 
@@ -1446,7 +1545,7 @@ export class ProtocolGameParse {
       g_dispatcher.addEvent(() => {
         if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ot:mapKnown'))
       })
-      ;(g_map as any).m_mapKnown = true
+        ; (g_map as any).m_mapKnown = true
     }
     g_dispatcher.addEvent(() => {
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ot:mapDescription'))

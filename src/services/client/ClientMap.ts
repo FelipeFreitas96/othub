@@ -47,6 +47,8 @@ export class ClientMap {
   m_floatingEffect?: boolean
   /** OTC Map::setLight / getLight – luz global (subterrâneo). */
   m_light: Light = { intensity: 250, color: 215 }
+  /** OTC: m_floors[z].missiles – map.cpp removeThing (missile branch). */
+  m_floors: Record<number, { missiles: Thing[] }> = {}
 
   constructor() {
     this.m_centralPosition = new Position(0, 0, SEA_FLOOR)
@@ -128,7 +130,7 @@ export class ClientMap {
 
     for (const mapView of this.m_mapViews) {
       const oldPos = (mapView as any).getLastCameraPosition?.() ?? null
-      ;(mapView as any).onMapCenterChange?.(centralPosition, oldPos)
+        ; (mapView as any).onMapCenterChange?.(centralPosition, oldPos)
     }
   }
 
@@ -233,11 +235,14 @@ export class ClientMap {
     }
   }
 
-  /** OTC: Map::notificateTileUpdate(pos, thing, operation) – map.cpp L115-126: if !pos.isMapPosition() return; for mapView mapView->onTileUpdate(pos, thing, op); if thing&&isItem g_minimap.updateTile. */
   notificateTileUpdate(pos: Position, thing: Thing, operation: string) {
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return
     for (const mapView of this.m_mapViews) {
       mapView.onTileUpdate?.(pos, thing, operation)
+    }
+
+    if (thing.isItem()) {
+      // g_minimap
     }
   }
 
@@ -255,31 +260,30 @@ export class ClientMap {
 
   /**
    * OTC: Map::addThing(thing, pos, stackPos) – early return !thing; item id 0; missile stub; getOrCreateTile; add if m_floatingEffect || !isEffect || tile has ground; tile->addThing; notificateTileUpdate.
+   * Stack order is 1:1 with OTC via Tile::addThing(thing, stackPos) priority logic.
    */
   addThing(thing: Thing, pos: PositionLike, stackPos: number = -1) {
     if (!thing) return
 
     if (thing.isItem() && (thing.getId() == null || thing.getId() === 0)) return
 
-    // Missiles are handled separately
     if (thing.isMissile()) return
 
     const tile = this.getOrCreateTile(pos)
     if (!tile) return
 
-    // Update thing's position to the new tile position
     const position = ensurePosition(pos)
-    thing.setPosition(position)
-
     const floatingEffect = this.m_floatingEffect ?? false
     const isEffect = thing.isEffect()
     const hasGround = (tile.m_things?.length ?? 0) > 0
 
     if (floatingEffect || !isEffect || hasGround) {
-      if (stackPos < 0 || stackPos >= tile.m_things.length) tile.m_things.push(thing)
-      else tile.m_things.splice(stackPos, 0, thing)
+      if (thing.isCreature?.()) {
+        const id = thing.getId?.()
+        if (id != null && tile.m_things.some((t: Thing) => t.isCreature?.() && t.getId?.() === id)) return
+      }
+      tile.addThing(thing, stackPos)
       this.notificateTileUpdate(position, thing, 'add')
-      ;(thing as any).onAppear?.()
     }
   }
 
@@ -303,40 +307,31 @@ export class ClientMap {
     return true
   }
 
-  // 1:1 map.cpp removeThing
+  /**
+   * OTC: bool Map::removeThing(const ThingPtr& thing) – map.cpp L266-289
+   * 1) Missile → m_floors[z].missiles.erase(thing); 2) else thing->getTile() && tile->removeThing(thing) → notificateTileUpdate(REMOVE).
+   */
   removeThing(thing: Thing): boolean {
     if (!thing) return false
-    
-    // Find the thing in tiles (both m_things and m_walkingCreatures)
-    let found = false
-    for (const tile of this.m_tiles.values()) {
-      // Remove from m_things
-      if (tile?.m_things?.length) {
-        const idx = tile.m_things.indexOf(thing)
-        if (idx !== -1) {
-          tile.m_things.splice(idx, 1)
-          // Não limpar o tile quando a última coisa removida é criatura: no parseCreatureMove a criatura
-          // será adicionada a este mesmo tile em m_walkingCreatures (updateWalkingTile); se deletarmos o tile,
-          // o cache continua com a ref ao tile antigo e o personagem some durante o walk.
-          if (tile.m_things.length === 0 && tile.m_position && !thing.isCreature?.()) {
-            this.cleanTile(tile.m_position)
-          }
-          found = true
-        }
-      }
-      
-      // Also remove from m_walkingCreatures if it's a creature
-      if (thing.isCreature() && tile?.m_walkingCreatures?.length) {
-        const id = thing.getId()
-        if (id != null) {
-          const walkIdx = tile.m_walkingCreatures.findIndex(c => c.getId?.() === id)
-          if (walkIdx !== -1) {
-            tile.m_walkingCreatures.splice(walkIdx, 1)
-          }
-        }
-      }
+
+    if (thing.isMissile?.()) {
+      const pos = thing.getPosition()
+      const z = pos.z ?? 0
+      if (!this.m_floors[z]) return false
+      const missileIndex = this.m_floors[z].missiles.indexOf(thing)
+      if (missileIndex === -1) return false
+      this.m_floors[z].missiles.splice(missileIndex, 1)
+      return true
     }
-    return found
+
+    const tile = thing.getTile()
+    if (tile && tile.removeThing(thing)) {
+      const pos = thing.getPosition()
+      if (pos) this.notificateTileUpdate(pos, thing, 'remove')
+      return true
+    }
+
+    return false
   }
 
   /** Armazena Creature (OTC: criaturas conhecidas). Aceita Creature ou plain entry. */
@@ -429,7 +424,7 @@ export class ClientMap {
   removeCreatureById(id: number | string) {
     if (id == null) return
     const numId = Number(id)
-    
+
     // Remove a criatura de todos os tiles onde ela possa estar (m_things e m_walkingCreatures)
     // Mas NÃO remove da lista de conhecidas (m_knownCreatures) para não perder o estado de walk
     for (const tile of this.m_tiles.values()) {

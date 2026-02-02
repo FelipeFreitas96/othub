@@ -200,6 +200,36 @@ export class ThingType {
   }
 
   /**
+   * Frame group to use when drawing: Moving when walking, Idle/Default when not (creatures with GameIdleAnimations).
+   */
+  getFrameGroupForDraw(isWalking: boolean): number {
+    if (!this.m_frameGroups?.length) return 0
+    if (this.m_frameGroups.length === 1) return 0
+    return isWalking ? 1 : 0
+  }
+
+  /** Phase count for the current draw state (Idle or Moving). */
+  getPhasesForDraw(isWalking: boolean): number {
+    const gi = this.getFrameGroupForDraw(isWalking)
+    const g = this.m_frameGroups?.[gi]
+    return g ? Math.max(1, g.phases) : Math.max(1, this.m_animationPhases)
+  }
+
+  /**
+   * Sprite index within a specific frame group (for creatures with Idle/Moving).
+   */
+  getSpriteIndexForGroup(groupIndex: number, w: number, h: number, l: number, x: number, y: number, z: number, a: number): number {
+    const g = this.m_frameGroups?.[groupIndex]
+    if (!g) return this.getSpriteIndex(w, h, l, x, y, z, a)
+    const phases = Math.max(1, g.phases)
+    const offset = g.spriteOffset ?? 0
+    const idx = ((((((a % phases) * g.patternZ + z) * g.patternY + y) * g.patternX + x) * g.layers + l) * g.height + h) * g.width + w
+    const nextOffset = this.m_frameGroups?.[groupIndex + 1]?.spriteOffset ?? this.m_spritesIndex?.length ?? 0
+    const globalIdx = offset + idx
+    return globalIdx >= offset && globalIdx < nextOffset && globalIdx < (this.m_spritesIndex?.length ?? 0) ? globalIdx : -1
+  }
+
+  /**
    * OTC getTextureIndex(l, x, y, z) – index into texture frame grid
    */
   getTextureIndex(l: number, x: number, y: number, z: number) {
@@ -208,27 +238,25 @@ export class ThingType {
 
   /**
    * OTC getTexture(animationPhase) – returns the full texture for that phase.
-   * We return a canvas for the single frame (layer, xPattern, yPattern, zPattern) so we can render the sprite in one draw.
-   * See https://github.com/opentibiabr/otclient/blob/main/src/client/thingtype.cpp
+   * frameGroupIndex: when set (creatures with Idle/Moving), use that group's sprites.
    */
-  getTexture(animationPhase: number, sprites: any, layer: number, xPattern: number, yPattern: number, zPattern: number) {
+  getTexture(animationPhase: number, sprites: any, layer: number, xPattern: number, yPattern: number, zPattern: number, frameGroupIndex?: number) {
     if (this.m_null || !sprites?.getCanvas) return null
-    const phases = Math.max(1, this.m_animationPhases)
-    const a = animationPhase % phases
-    const key = `${a}_${layer}_${xPattern}_${yPattern}_${zPattern}`
+    const key = frameGroupIndex != null ? `${frameGroupIndex}_${animationPhase}_${layer}_${xPattern}_${yPattern}_${zPattern}` : `${animationPhase}_${layer}_${xPattern}_${yPattern}_${zPattern}`
     if (this.m_textureCache.has(key)) return this.m_textureCache.get(key)
-    const canvas = this.loadTexture(a, sprites, layer, xPattern, yPattern, zPattern)
+    const canvas = this.loadTexture(animationPhase, sprites, layer, xPattern, yPattern, zPattern, frameGroupIndex)
     if (canvas) this.m_textureCache.set(key, canvas)
     return canvas ?? null
   }
 
   /**
    * OTC loadTexture(animationPhase) – builds the combined texture (all sprites for one frame).
-   * We build one canvas bw*32 x bh*32 for the given (phase, layer, x, y, z).
+   * frameGroupIndex: when set, use that frame group's dimensions and sprite range.
    */
-  loadTexture(animationPhase: number, sprites: any, layer: number, xPattern: number, yPattern: number, zPattern: number) {
-    const bw = this.getWidth()
-    const bh = this.getHeight()
+  loadTexture(animationPhase: number, sprites: any, layer: number, xPattern: number, yPattern: number, zPattern: number, frameGroupIndex?: number) {
+    const g = frameGroupIndex != null ? this.m_frameGroups?.[frameGroupIndex] : null
+    const bw = g ? g.width : this.getWidth()
+    const bh = g ? g.height : this.getHeight()
     const cw = bw * 32
     const ch = bh * 32
     const canvas = document.createElement('canvas')
@@ -241,7 +269,7 @@ export class ThingType {
     let drawn = 0
     for (let h = 0; h < bh; h++) {
       for (let w = 0; w < bw; w++) {
-        const idx = this.getSpriteIndex(w, h, layer, xPattern, yPattern, zPattern, animationPhase)
+        const idx = frameGroupIndex != null ? this.getSpriteIndexForGroup(frameGroupIndex, w, h, layer, xPattern, yPattern, zPattern, animationPhase) : this.getSpriteIndex(w, h, layer, xPattern, yPattern, zPattern, animationPhase)
         const sid = idx >= 0 ? (spriteIds[idx] ?? 0) : 0
         if (!sid) continue
         const src = sprites.getCanvas(sid)
@@ -266,14 +294,17 @@ export class ThingType {
     const things = pipeline.thingsRef?.current
     if (!things?.sprites) return
 
-    const animationFrameId = animationPhase % this.m_animationPhases
-    const texture = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern)
+    const frameGroupIndex = dest?.frameGroupIndex
+    const g = frameGroupIndex != null ? this.m_frameGroups?.[frameGroupIndex] : null
+    const phases = g ? Math.max(1, g.phases) : Math.max(1, this.m_animationPhases)
+    const animationFrameId = animationPhase % phases
+    const texture = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern, frameGroupIndex)
     if (!texture) return
 
     const TILE_PIXELS = 32
     const { tileX, tileY, drawElevationPx, tileZ, pixelOffsetX = 0, pixelOffsetY = 0 } = dest
-    const bw = this.getWidth()
-    const bh = this.getHeight()
+    const bw = g ? g.width : this.getWidth()
+    const bh = g ? g.height : this.getHeight()
     
     // Displacement moves the sprite to center it on the tile
     // Tibia convention: positive displacement = move left/up
@@ -457,8 +488,6 @@ export class ThingType {
       for (let j = totalSpritesCount; j < totalSpritesCount + totalSprites; j++) {
         this.m_spritesIndex[j] = useU32 ? fin.u32() : fin.u16()
       }
-      totalSpritesCount += totalSprites
-
       this.m_frameGroups.push({
         type: frameGroupType,
         width,
@@ -468,7 +497,9 @@ export class ThingType {
         patternY: this.m_numPatternY,
         patternZ: this.m_numPatternZ,
         phases: groupAnimationsPhases,
+        spriteOffset: totalSpritesCount,
       })
+      totalSpritesCount += totalSprites
     }
     this.m_textureData = Array.from({ length: Math.max(1, this.m_animationPhases) }, () => ({ source: null }))
   }

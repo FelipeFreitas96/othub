@@ -42,6 +42,11 @@ export class Game {
     return this.m_clientVersion
   }
 
+  /** OTC: formatCreatureName(string) – used in getCreature when reading creature name. */
+  formatCreatureName(name: string): string {
+    return name ?? ''
+  }
+
   setClientVersion(version: number | string) {
     const parsed = typeof version === 'string' ? parseInt(version, 10) : version
     this.m_clientVersion = Number.isFinite(parsed) && parsed > 0 ? (parsed as number) : 860

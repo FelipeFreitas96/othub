@@ -101,7 +101,7 @@ export class MapView {
         depthTest: false,
         depthWrite: false,
       })
-      const lightPlane = new THREE.PlaneGeometry(w, h)
+      const lightPlane = new THREE.PlaneGeometry(w + 10, h + 10)
       this.lightOverlayMesh = new THREE.Mesh(lightPlane, lightMat)
       this.lightOverlayMesh.position.set(0, 0, 5)
       this.lightOverlayMesh.renderOrder = 1000
@@ -355,7 +355,6 @@ export class MapView {
       }
     }
     this.camera.position.set(camX, camY, 10)
-
     this.pipeline.beginFrame()
     const lightView = this.m_lightView.isEnabled() ? this.m_lightView : null
     if (lightView) this.m_lightView.clear()
@@ -460,6 +459,8 @@ export class MapView {
     const cameraAspect = cameraW / cameraH
 
     // Ajusta a câmera para mostrar apenas a área do viewport
+    let frustumW: number
+    let frustumH: number
     if (viewAspect > cameraAspect) {
       // Tela é mais larga - altura é o limitante
       const halfW = (cameraH * viewAspect) / 2
@@ -468,6 +469,8 @@ export class MapView {
       this.camera.top = cameraH / 2
       this.camera.bottom = -cameraH / 2
       this.m_zoomLevel = vh / (cameraH * TILE_PIXELS)
+      frustumW = cameraH * viewAspect
+      frustumH = cameraH
     } else {
       // Tela é mais alta - largura é o limitante
       const halfH = (cameraW / viewAspect) / 2
@@ -476,9 +479,25 @@ export class MapView {
       this.camera.top = halfH
       this.camera.bottom = -halfH
       this.m_zoomLevel = vw / (cameraW * TILE_PIXELS)
+      frustumW = cameraW
+      frustumH = cameraW / viewAspect
     }
 
     this.camera.updateProjectionMatrix()
+
+    // Light overlay deve cobrir toda a tela: usar exatamente o frustum da câmera + margem para evitar cantos escuros
+    const drawW = this.m_drawDimension.width
+    const drawH = this.m_drawDimension.height
+    if (this.lightOverlayMesh && drawW > 0 && drawH > 0) {
+      const actualFrustumW = this.camera.right - this.camera.left
+      const actualFrustumH = this.camera.top - this.camera.bottom
+      const margin = 1.05 // 5% de margem para garantir cobertura total (arredondamento, aspect)
+      this.lightOverlayMesh.scale.set(
+        (actualFrustumW / drawW) * margin,
+        (actualFrustumH / drawH) * margin,
+        1
+      )
+    }
   }
 
   render() {

@@ -6,7 +6,9 @@
 
 import { DrawPool } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
-import { Position, PositionLike, ensurePosition } from './Position'
+import { g_map } from './ClientMap'
+import { Position } from './Position'
+import { Tile } from './Tile'
 
 export abstract class Thing {
   protected m_position: Position | null = null
@@ -25,6 +27,21 @@ export abstract class Thing {
 
   getStackPos(): number { return this.m_stackPos }
   setStackPos(stackPos: number) { this.m_stackPos = stackPos }
+
+  /** OTC thing.cpp getStackPriority(): 0=ground, 1=groundBorder, 2=onBottom, 3=onTop, 4=creature, 5=common */
+  getStackPriority(): number {
+    if (this.isGround()) return 0
+    if (this.isGroundBorder()) return 1
+    if (this.isOnBottom()) return 2
+    if (this.isOnTop()) return 3
+    if (this.isCreature()) return 4
+    return 5
+  }
+
+  getTile(): Tile | null {
+    if (!this.m_position) return null;
+    return g_map.getTile(this.m_position);
+  }
 
   // Type checks - subclasses override to return true
   isItem(): boolean { return false }
