@@ -6,6 +6,7 @@
  */
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { SkillsService } from '../service/skillsService'
+import { g_player } from '../../../../services/client/LocalPlayer'
 
 /** Player mock padrão quando não há g_game (fallback) */
 const DEFAULT_PLAYER = {
@@ -98,7 +99,7 @@ export function useSkillsGameState(options = {}) {
   const expSpeedIntervalRef = useRef(null)
 
   const isOnline = useGGame ? game.isOnline() : internalOnline
-  const rawPlayer = useGGame ? game.getLocalPlayer() : internalPlayer
+  const rawPlayer = useGGame ? g_player : internalPlayer
   const player = useGGame && rawPlayer ? SkillsService.enrichPlayerForDisplay(rawPlayer, expRating) : rawPlayer
 
   const refresh = useCallback(() => {

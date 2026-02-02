@@ -1,24 +1,18 @@
 // ui/components/GameMapPanel.jsx
 import { useEffect, useRef } from 'react'
-import { MapView } from '../services/client/MapView.js'
-import { getThings, loadThings } from '../services/protocol/things.js'
-import { sendMove, GAME_CLIENT_OPCODES, OPCODE_TO_DIRECTION } from '../services/client/ProtocolGameParse.js'
-import { isFeatureEnabled } from '../services/protocol/features.js'
-import { localPlayer } from '../services/game/LocalPlayer.js'
-import { g_map } from '../services/client/ClientMap.js'
+import { MapView } from '../services/client/MapView'
+import { getThings, loadThings } from '../services/protocol/things'
+import { g_map } from '../services/client/ClientMap'
+import { useWalkController } from './modules/game_walk'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
-
-const WASD_TO_MOVE = {
-  KeyW: GAME_CLIENT_OPCODES.GameClientWalkNorth,
-  KeyS: GAME_CLIENT_OPCODES.GameClientWalkSouth,
-  KeyA: GAME_CLIENT_OPCODES.GameClientWalkWest,
-  KeyD: GAME_CLIENT_OPCODES.GameClientWalkEast,
-}
 
 export default function GameMapPanel() {
   const hostRef = useRef(null)
   const mapViewRef = useRef(null)
+
+  // Initialize walk controller (handles WASD, arrows, numpad)
+  useWalkController()
 
   useEffect(() => {
     const host = hostRef.current
@@ -57,38 +51,6 @@ export default function GameMapPanel() {
       mapViewRef.current.requestVisibleTilesCacheUpdate()
     }
 
-    const keysHeld = new Set()
-
-    const onKeyDown = (e) => {
-      if (WASD_TO_MOVE[e.code]) {
-        keysHeld.add(e.code)
-        e.preventDefault()
-      }
-    }
-
-    const onKeyUp = (e) => {
-      if (WASD_TO_MOVE[e.code]) {
-        keysHeld.delete(e.code)
-        e.preventDefault()
-      }
-    }
-
-    const processMovement = () => {
-      if (keysHeld.size === 0) return
-
-      // Pega a última tecla pressionada (ou a primeira do Set)
-      const lastKey = Array.from(keysHeld).pop()
-      const opcode = WASD_TO_MOVE[lastKey]
-      
-      if (opcode != null && localPlayer.canWalk()) {
-        if (isFeatureEnabled('GameAllowPreWalk')) {
-          const dir = OPCODE_TO_DIRECTION[opcode]
-          if (dir != null) localPlayer.preWalk(dir)
-        }
-        sendMove(opcode)
-      }
-    }
-
     // ResizeObserver para atualizar o fit quando o container mudar de tamanho
     const resizeObserver = new ResizeObserver(() => {
       if (mapViewRef.current && host) {
@@ -99,12 +61,9 @@ export default function GameMapPanel() {
 
     window.addEventListener('ot:map', onMap)
     window.addEventListener('ot:mapMove', onMapMove)
-    window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('keyup', onKeyUp, true)
 
     let raf = 0
     const loop = () => {
-      processMovement()
       if (mapViewRef.current) {
         mapViewRef.current.draw()
         mapViewRef.current.render()
@@ -118,8 +77,6 @@ export default function GameMapPanel() {
       resizeObserver.disconnect()
       window.removeEventListener('ot:map', onMap)
       window.removeEventListener('ot:mapMove', onMapMove)
-      window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('keyup', onKeyUp, true)
       g_map.removeMapView(mapViewRef.current)
       mapViewRef.current?.dispose()
       mapViewRef.current = null
