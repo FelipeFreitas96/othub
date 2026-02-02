@@ -21,6 +21,11 @@ export const TILE_PIXELS = 32
 export const MAX_ELEVATION = 255
 export const MAP_MAX_Z = 15
 
+/** OTC: g_gameConfig.getTileMaxThings() */
+function getTileMaxThings(): number {
+  return MAX_THINGS
+}
+
 // Tile flags (from OTC tile.h)
 const NOT_WALKABLE = 1 << 0
 const NOT_PATHABLE = 1 << 1
@@ -121,63 +126,113 @@ export class Tile {
     return this.m_elevation >= elevation
   }
 
+  /** OTC: Tile::removeThing – erase from m_things, thing->onDisappear() */
   removeThing(thing: Thing): boolean {
     const thingIndex = this.m_things.indexOf(thing)
     if (thingIndex === -1) return false
     this.m_things.splice(thingIndex, 1)
+    ;(thing as any).onDisappear?.()
     return true
   }
 
+  /** OTC: markHighlightedThing(Color::white) – stub */
+  private markHighlightedThing(_color: number): void {}
+
+  /** OTC: updateCreatureRangeForInsert(stackPos, thing) – stub */
+  private updateCreatureRangeForInsert(_stackPos: number, _thing: Thing): void {}
+
+  /** OTC: setThingFlag(thing) – stub */
+  private setThingFlag(_thing: Thing): void {}
+
+  /** OTC: updateThingStackPos() – updates m_stackPos on each thing to match index */
+  private updateThingStackPos(): void {
+    for (let i = 0; i < this.m_things.length; i++) {
+      this.m_things[i].setStackPos(i)
+    }
+  }
+
+  /** OTC: updateElevation(thing, m_drawElevation) when adding thing to tile */
+  private updateElevationForAdd(thing: Thing): void {
+    if (!thing?.hasElevation?.()) return
+    const elevPx = thing.getElevation?.() ?? 0
+    this.m_drawElevation = Math.min(MAX_ELEVATION, this.m_drawElevation + elevPx)
+  }
+
+  /** OTC: checkForDetachableThing() – stub */
+  private checkForDetachableThing(): void {}
+
   /**
-   * OTC: Tile::addThing(thing, stackPos) – tile.cpp L166-232
-   * Priority: 0=ground, 1=groundBorder, 2=onBottom, 3=onTop, 4=creature, 5=common.
-   * stackPos < 0 or 255: auto position by priority; -2 = append; else insert at stackPos.
+   * OTC: void Tile::addThing(const ThingPtr& thing, int stackPos) – 1:1
+   * Effect: isTopEffect → emplace_back, else insert(begin). Non-effect: priority insert, setPosition(pos, stackPos), updateThingStackPos.
    */
   addThing(thing: Thing, stackPos: number): void {
     if (!thing) return
 
     if (thing.isEffect?.()) {
-      const isTop = (thing as any).isTopEffect?.()
-      if (isTop) this.m_effects.unshift(thing)
-      else this.m_effects.push(thing)
+      const newEffect = thing as any
+      const mustOptimize = false
+      for (const prevEffect of this.m_effects) {
+        if (prevEffect?.canDraw?.() === false) continue
+        if (mustOptimize && newEffect.getSize?.() > prevEffect.getSize?.()) {
+          if (prevEffect.canDraw) prevEffect.canDraw(false)
+        } else if (mustOptimize || newEffect.getId?.() === prevEffect.getId?.()) {
+          if (newEffect.waitFor?.(prevEffect) === false) return
+        }
+      }
+      if (!newEffect.isTopEffect?.()) {
+        this.m_effects.unshift(thing)
+      } else {
+        this.m_effects.push(thing)
+      }
+      this.setThingFlag(thing)
       thing.setPosition(this.m_position)
-      ;(thing as any).onAppear?.()
+      thing.onAppear()
       return
     }
 
-    let insertAt: number
+    const size = this.m_things.length
+
     if (stackPos < 0 || stackPos === 255) {
       const priority = thing.getStackPriority()
-      // -1 or 255 => auto; -2 => append
-      let append = stackPos === -2
-      if (!append) {
+      let append: boolean
+      if (stackPos === -2) {
+        append = true
+      } else {
         append = priority <= 3
         if (g_game.getClientVersion() >= 854 && priority === 4) append = !append
       }
-      insertAt = 0
-      for (let i = 0; i < this.m_things.length; i++) {
+      stackPos = 0
+      for (let i = 0; i < size; i++) {
         const otherPriority = this.m_things[i].getStackPriority()
         if ((append && otherPriority > priority) || (!append && otherPriority >= priority)) {
-          insertAt = i
+          stackPos = i
           break
         }
-        insertAt = i + 1
+        stackPos = i + 1
       }
-    } else if (stackPos > this.m_things.length) {
-      insertAt = this.m_things.length
-    } else {
-      insertAt = stackPos
+    } else if (stackPos > size) {
+      stackPos = size
     }
 
-    this.m_things.splice(insertAt, 0, thing)
-    while (this.m_things.length > MAX_THINGS) {
-      const removed = this.m_things[MAX_THINGS]
-      this.m_things.splice(MAX_THINGS, 1)
-      ;(removed as any).onDisappear?.()
+    this.markHighlightedThing(0xffffff)
+
+    this.m_things.splice(stackPos, 0, thing)
+
+    this.updateCreatureRangeForInsert(stackPos, thing)
+    this.setThingFlag(thing)
+
+    if (size > getTileMaxThings()) {
+      const removed = this.m_things[getTileMaxThings()]
+      this.removeThing(removed)
     }
 
-    thing.setPosition(this.m_position)
-    ;(thing as any).onAppear?.()
+    this.updateThingStackPos()
+    
+    thing.setPosition(this.m_position, stackPos)
+    thing.onAppear()
+
+    this.updateElevationForAdd(thing)
+    this.checkForDetachableThing()
   }
 
   /** OTC: Tile::hasFloorChange() – tile.cpp:487 */

@@ -553,6 +553,8 @@ export class Creature extends Thing {
   }
 
   allowAppearWalk() { this.m_allowAppearWalk = true; }
+  /** Set before removeThing so onAppear can run walk(oldPos, newPos). OTC: set when creature is removed for move. */
+  setOldPosition(pos: Position | null) { this.m_oldPosition = pos ? pos.clone() : null; }
 
   /** OTC: getWalkOffset() */
   getWalkOffset() {
