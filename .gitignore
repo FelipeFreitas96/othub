@@ -34,6 +34,7 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+.cursorrules
 
 # OS
 Thumbs.db
