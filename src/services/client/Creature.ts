@@ -11,13 +11,25 @@ import { g_map } from './ClientMap'
 import { g_dispatcher, type ScheduledEventHandle } from '../framework/EventDispatcher'
 import { isFeatureEnabled, getClientVersion, FEATURES } from '../protocol/features'
 import { Outfit } from './types'
+import type { MapPosInfo, Point, Rect } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { Thing } from './Thing'
-import { DrawPool } from '../graphics/DrawPool'
+import { DrawPool, DrawOrder } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
 import { g_game } from './Game'
+import { DrawFlags } from '../graphics/drawFlags'
 
 const TILE_PIXELS = 32
+
+/** OTC SpriteMask – layer for outfit color (head/body/legs/feet). */
+const SpriteMaskRed = 1
+const SpriteMaskGreen = 2
+const SpriteMaskBlue = 3
+const SpriteMaskYellow = 4
+
+/** OTC SkullNone / ShieldNone */
+export const SkullNone = 0
+export const ShieldNone = 0
 
 // OTC Otc::Direction (otclient/src/client/const.h)
 export const DirInvalid = -1
@@ -109,6 +121,44 @@ export class Creature extends Thing {
   m_light: { intensity: number, color: number }
   /** OTC: m_masterId – summon owner. */
   m_masterId: number
+  /** OTC: skull icon above creature (SkullNone, SkullYellow, etc.) */
+  m_skull: number
+  /** OTC: party/party-share icon (ShieldNone, etc.) */
+  m_shield: number
+  /** OTC: color for name/health bar (set from setHealthPercent) */
+  m_informationColor: { r: number; g: number; b: number }
+  /** OTC: draw outfit color layers (head/body/legs/feet) */
+  m_drawOutfitColor: boolean
+  /** OTC: texture for skull icon (canvas or null = draw placeholder) */
+  m_skullTexture: HTMLCanvasElement | null
+  /** OTC: texture for shield icon */
+  m_shieldTexture: HTMLCanvasElement | null
+  m_showShieldTexture: boolean
+  /** OTC: m_jumpOffset – jump animation offset (stub). */
+  m_jumpOffset: { x: number; y: number }
+  /** OTC: m_bounce – bounce animation (stub). */
+  m_bounce: { height: number; speed: number; minHeight: number; timer: { ticksElapsed: () => number } }
+  /** OTC: m_covered – creature covered by another floor. */
+  m_covered: boolean
+  /** OTC: m_text – extra text below name (stub). */
+  m_text: { getTextSize: () => { width: number; height: number }; drawText: (center: Point, rect: Rect) => void } | null
+  /** OTC: m_emblem, m_type, m_icon (stub). */
+  m_emblem: number
+  m_type: number
+  m_icon: number
+  /** OTC: m_typingIconTexture, m_emblemTexture, m_typeTexture, m_iconTexture (stub). */
+  m_typingIconTexture: HTMLCanvasElement | null
+  m_emblemTexture: HTMLCanvasElement | null
+  m_typeTexture: HTMLCanvasElement | null
+  m_iconTexture: HTMLCanvasElement | null
+  /** OTC: m_icons – atlas groups + iconEntries from protocol. */
+  m_icons: { atlasGroups: { texture: any; clip: { width: number; height: number }; count: number }[]; numberText: { setText: (s: string) => void; getTextSize: () => { width: number; height: number }; draw: (rect: Rect, color: { r: number; g: number; b: number }) => void }; iconEntries?: Array<{ icon: number; category: number; count: number }> } | null
+  /** OTC: m_vocation – player vocation (creatureData type 11/12/13). */
+  m_vocation: number
+  /** OTC: m_nameShader (stub). */
+  m_nameShader: string
+  /** OTC: m_widgetInformation (stub). */
+  m_widgetInformation: { draw: (rect: Rect, poolType: number) => void } | null
 
   constructor(data: CreatureData) {
     super()
@@ -165,6 +215,209 @@ export class Creature extends Thing {
     this.m_position = null
     this.m_walkUpdateEvent = null
     this.m_masterId = 0
+    this.m_skull = 0
+    this.m_shield = 0
+    this.m_informationColor = { r: 96, g: 96, b: 96 }
+    this.m_drawOutfitColor = true
+    this.m_skullTexture = null
+    this.m_shieldTexture = null
+    this.m_showShieldTexture = true
+    this.m_jumpOffset = { x: 0, y: 0 }
+    this.m_bounce = { height: 0, speed: 0, minHeight: 0, timer: { ticksElapsed: () => 0 } }
+    this.m_covered = false
+    this.m_text = null
+    this.m_emblem = 0
+    this.m_type = 0
+    this.m_icon = 0
+    this.m_typingIconTexture = null
+    this.m_emblemTexture = null
+    this.m_typeTexture = null
+    this.m_iconTexture = null
+    this.m_icons = null
+    this.m_vocation = 0
+    this.m_nameShader = ''
+    this.m_widgetInformation = null
+  }
+
+  /** OTC: isDead() – stub. */
+  isDead(): boolean {
+    return (this.m_healthPercent ?? 100) <= 0
+  }
+
+  /** OTC: setCovered(). */
+  setCovered(covered: boolean) {
+    this.m_covered = covered
+  }
+
+  /** OTC: setVocation(uint8_t) – creatureData type 11/12/13. */
+  setVocation(vocationId: number) {
+    this.m_vocation = vocationId & 0xff
+  }
+
+  /** OTC: getVocation(). */
+  getVocation(): number {
+    return this.m_vocation
+  }
+
+  /** OTC: setIcons(vector of icon, category, count) – creatureData type 14. */
+  setIcons(icons: Array<{ icon: number; category: number; count: number }>) {
+    if (!this.m_icons) {
+      this.m_icons = {
+        atlasGroups: [],
+        numberText: {
+          setText: () => {},
+          getTextSize: () => ({ width: 0, height: 12 }),
+          draw: () => {},
+        },
+        iconEntries: [],
+      }
+    }
+    this.m_icons.iconEntries = icons.slice()
+  }
+
+  /** OTC: isCovered(). */
+  isCovered(): boolean {
+    return this.m_covered
+  }
+
+  /** OTC: getExactSize() – stub. */
+  getExactSize(): number {
+    return 12
+  }
+
+  /** OTC: isNpc() – stub. */
+  isNpc(): boolean {
+    return false
+  }
+
+  /** OTC: isFullHealth(). */
+  isFullHealth(): boolean {
+    return (this.m_healthPercent ?? 100) >= 100
+  }
+
+  /** OTC: isLocalPlayer() – stub. */
+  isLocalPlayer(): boolean {
+    return false
+  }
+
+  /** OTC: getLocalPlayer() – stub. */
+  getLocalPlayer(): Creature | null {
+    return null
+  }
+
+  /** OTC: isMage() – stub. */
+  isMage(): boolean {
+    return false
+  }
+
+  /** OTC: getMaxManaShield() – stub. */
+  getMaxManaShield(): number {
+    return 0
+  }
+
+  /** OTC: getManaShield() – stub. */
+  getManaShield(): number {
+    return 0
+  }
+
+  /** OTC: getMaxMana() – stub. */
+  getMaxMana(): number {
+    return 0
+  }
+
+  /** OTC: getMana() – stub. */
+  getMana(): number {
+    return 0
+  }
+
+  /** OTC: getHarmony() – stub. */
+  getHarmony(): number {
+    return 0
+  }
+
+  /** OTC: isSerene() – stub. */
+  isSerene(): boolean {
+    return false
+  }
+
+  /** OTC: isMonk() – stub. */
+  isMonk(): boolean {
+    return false
+  }
+
+  /** OTC: getTyping() – stub. */
+  getTyping(): boolean {
+    return false
+  }
+
+  /** OTC: isHided() – creature hidden (stub). */
+  isHided(): boolean {
+    return false
+  }
+
+  /** OTC: drawAttachedEffect(originalDest, dest, nullptr, onTop) – stub. */
+  drawAttachedEffect(_originalDest: any, _dest: any, _lightView: any, _onTop: boolean): void {}
+
+  /** OTC: drawAttachedParticlesEffect(originalDest) – stub. */
+  drawAttachedParticlesEffect(_originalDest: any): void {}
+
+  /** OTC: hasShader() – creature has custom shader (stub). */
+  hasShader(): boolean {
+    return false
+  }
+
+  /** OTC: hasMountShader() – stub. */
+  hasMountShader(): boolean {
+    return false
+  }
+
+  /** OTC: outfit.isCreature() – outfit is a creature lookType. */
+  isOutfitCreature(): boolean {
+    const o = this.m_outfit as any
+    if (o?.isItem === true || o?.isEffect === true) return false
+    return (this.m_outfit?.lookType ?? 0) > 0
+  }
+
+  /** OTC: outfit.isItem() / isEffect() – stub (outfit as item/effect). */
+  isOutfitItem(): boolean {
+    return (this.m_outfit as any)?.isItem === true
+  }
+
+  isOutfitEffect(): boolean {
+    return (this.m_outfit as any)?.isEffect === true
+  }
+
+  /** OTC: getDisplacement() – from ThingType. */
+  getDisplacement(): { x: number; y: number } {
+    const ct = this.getThingType(undefined)
+    const d = ct?.getDisplacement?.() ?? ct?.m_displacement ?? { x: 0, y: 0 }
+    return { x: d.x ?? 0, y: d.y ?? 0 }
+  }
+
+  /** OTC: Color::white. */
+  static readonly COLOR_WHITE = { r: 255, g: 255, b: 255 }
+
+  /** OTC: getCurrentAnimationPhase(forMount = false) – same as calculateAnimationPhase. */
+  getCurrentAnimationPhase(pipeline?: DrawPool, forMount = false): number {
+    return this.calculateAnimationPhase(pipeline ?? (null as any), true)
+  }
+
+  /** OTC: m_outfit.getHeadColor() – Color from outfit head (8bit → rgb stub). */
+  getOutfitHeadColor(): { r: number; g: number; b: number } {
+    const v = this.m_outfit?.head ?? 255
+    return { r: v, g: v, b: v }
+  }
+  getOutfitBodyColor(): { r: number; g: number; b: number } {
+    const v = this.m_outfit?.body ?? 255
+    return { r: v, g: v, b: v }
+  }
+  getOutfitLegsColor(): { r: number; g: number; b: number } {
+    const v = this.m_outfit?.legs ?? 255
+    return { r: v, g: v, b: v }
+  }
+  getOutfitFeetColor(): { r: number; g: number; b: number } {
+    const v = this.m_outfit?.feet ?? 255
+    return { r: v, g: v, b: v }
   }
 
   setMasterId(masterId: number) { this.m_masterId = masterId }
@@ -192,7 +445,23 @@ export class Creature extends Thing {
   setBaseSpeed(baseSpeed: number) { this.m_baseSpeed = baseSpeed; }
   getBaseSpeed() { return this.m_baseSpeed; }
 
-  setHealthPercent(healthPercent: number) { this.m_healthPercent = healthPercent; }
+  /** OTC: setHealthPercent – updates m_healthPercent and m_informationColor (COLOR1..COLOR6) */
+  setHealthPercent(healthPercent: number) {
+    if (this.m_healthPercent === healthPercent) return
+    const COLOR1 = { r: 0x00, g: 0xBC, b: 0x00 }
+    const COLOR2 = { r: 0x50, g: 0xA1, b: 0x50 }
+    const COLOR3 = { r: 0xA1, g: 0xA1, b: 0x00 }
+    const COLOR4 = { r: 0xBF, g: 0x0A, b: 0x0A }
+    const COLOR5 = { r: 0x91, g: 0x0F, b: 0x0F }
+    const COLOR6 = { r: 0x85, g: 0x0C, b: 0x0C }
+    if (healthPercent > 92) this.m_informationColor = COLOR1
+    else if (healthPercent > 60) this.m_informationColor = COLOR2
+    else if (healthPercent > 30) this.m_informationColor = COLOR3
+    else if (healthPercent > 8) this.m_informationColor = COLOR4
+    else if (healthPercent > 3) this.m_informationColor = COLOR5
+    else this.m_informationColor = COLOR6
+    this.m_healthPercent = healthPercent
+  }
   getHealthPercent() { return this.m_healthPercent; }
 
   setOutfit(outfit: Outfit) { this.m_outfit = outfit; }
@@ -208,8 +477,23 @@ export class Creature extends Thing {
   setName(name: string) { this.m_name = name; }
   getName() { return this.m_name; }
 
-  setSkull(skull: number) { /* m_skull = skull */ }
-  setShield(shield: number) { /* m_shield = shield */ }
+  setSkull(skull: number) { this.m_skull = skull }
+  getSkull(): number { return this.m_skull ?? 0 }
+  setShield(shield: number) { this.m_shield = shield }
+  getShield(): number { return this.m_shield ?? 0 }
+  /** OTC: setSkullTexture(filename) – we accept canvas or null; app can load image and set canvas */
+  setSkullTexture(src: HTMLCanvasElement | string | null) {
+    if (src instanceof HTMLCanvasElement) this.m_skullTexture = src
+    else this.m_skullTexture = null
+  }
+  /** OTC: setShieldTexture(filename, blink) – we accept canvas or null */
+  setShieldTexture(src: HTMLCanvasElement | string | null, _blink = false) {
+    if (src instanceof HTMLCanvasElement) this.m_shieldTexture = src
+    else this.m_shieldTexture = null
+    this.m_showShieldTexture = true
+  }
+  setDrawOutfitColor(draw: boolean) { this.m_drawOutfitColor = draw }
+  isDrawingOutfitColor() { return this.m_drawOutfitColor }
   setEmblem(emblem: number) { /* m_emblem = emblem */ }
   setLight(light: { intensity: number, color: number }) { this.m_light = { ...light } }
   getLight(): { intensity: number, color: number } {
@@ -220,6 +504,17 @@ export class Creature extends Thing {
   }
   setPassable(passable: boolean) { this.m_passable = passable }
   isPassable(): boolean { return this.m_passable }
+
+  /** OTC: Creature::setType(uint8_t) – creature type (CreatureType opcode 149). */
+  setType(type: number) { this.m_type = type & 0xff }
+  getType(): number { return this.m_type }
+
+  /** OTC: Creature::showStaticSquare(color) – marks opcode 147 permanent. Stub. */
+  showStaticSquare(_color?: number) { /* UI can draw square */ }
+  /** OTC: Creature::hideStaticSquare() – marks opcode 147. Stub. */
+  hideStaticSquare() { /* UI can clear square */ }
+  /** OTC: Creature::addTimedSquare(markType) – marks opcode 147 timed. Stub. */
+  addTimedSquare(_markType?: number) { /* UI can draw timed square */ }
 
   /** OTC: Creature::canBeSeen() – creature is visible */
   canBeSeen(): boolean {
@@ -607,9 +902,34 @@ export class Creature extends Thing {
 
   /** OTC: equivalente ao creature type (outfit). Retorna o ThingType do lookType. */
   getThingType(pipeline?: DrawPool): ThingType | null {
-    const types = pipeline?.thingsRef?.current?.types
+    const types = pipeline?.thingsRef?.current?.types ?? getThings()?.types
     const lookType = this.m_outfit?.lookType ?? 0
     return lookType && types ? types.getCreature(lookType) : null
+  }
+
+  /** OTC: Thing::getNumPatternY() – from ThingType (addons). */
+  getNumPatternY(): number {
+    const ct = this.getThingType(undefined)
+    return ct?.getNumPatternY?.() ?? 1
+  }
+
+  /** OTC: number of layers for outfit color drawing (head/body/legs/feet). */
+  getLayers(): number {
+    const ct = this.getThingType(undefined)
+    return (ct as any)?.m_layers ?? ct?.getLayers?.() ?? 1
+  }
+
+  /** OTC: outfit has mount (lookTypeEx). */
+  hasMount(): boolean {
+    return !!(this.m_outfit as any)?.lookTypeEx
+  }
+
+  /** OTC: getMountThingType() – ThingType for mount. */
+  getMountThingType(pipeline?: DrawPool): ThingType | null {
+    const mountId = (this.m_outfit as any)?.lookTypeEx
+    if (!mountId) return null
+    const types = pipeline?.thingsRef?.current?.types ?? getThings()?.types
+    return types?.getCreature?.(mountId) ?? null
   }
 
   // Override Thing methods
@@ -618,19 +938,13 @@ export class Creature extends Thing {
   override isWalking() { return !!this.m_walking }
 
   /**
-   * OTC: Creature::draw(dest, scaleFactor, animate, lightView) → getThingType()->draw(dest, 0, xPattern, yPattern, zPattern, animationPhase, color, drawThings, lightView).
-   * pixelOffsetX/Y: offset de walk em pixels (OTC: dest + animationOffset).
-   * isWalkDraw: indica se esta chamada vem da lista de walkingCreatures (true) ou dos m_things estáticos (false/undefined)
+   * OTC: Creature::draw(dest, drawThings, lightView) – calls internalDraw(_dest). drawFlags passed for marked/highlight.
    */
-  override draw(pipeline: DrawPool, tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false) {
+  override draw(pipeline: DrawPool, tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false, drawFlags = 0) {
     const ct = this.getThingType(pipeline)
     if (!ct) return
     const things = pipeline.thingsRef?.current
     if (!things?.types) return
-
-    // Se a criatura está andando e NÃO estamos sendo chamados da lista de walkingCreatures,
-    // não desenha (ela será desenhada pelo código de walking).
-    // OTClient: criaturas em walk são desenhadas apenas via m_walkingCreatures, não via m_things.
     if (this.m_walking && !isWalkDraw) return
 
     const dest = {
@@ -643,14 +957,302 @@ export class Creature extends Thing {
       pixelOffsetY,
       frameGroupIndex: ct.getFrameGroupForDraw(this.m_walking),
     }
-    const dir = this.m_walking ? this.m_direction : (this.m_direction ?? 0)
-    const px = ct.patternX ?? ct.m_numPatternX ?? 1
-    const xPattern = px >= 4 ? (dir & 3) : 0
-    const yPattern = 0
-    const zPattern = 0
-    const animationPhase = this.calculateAnimationPhase(pipeline, true)
-    ct.draw(pipeline, dest, 0, xPattern, yPattern, zPattern, animationPhase, null, true, null)
-    this.m_footStepDrawn = true;
+    const color = Creature.COLOR_WHITE
+    this.internalDraw(pipeline, dest, color)
+    this.m_footStepDrawn = true
+  }
+
+  /**
+   * OTC: void Creature::internalDraw(Point dest, const Color& color) – 1:1 structure.
+   * Jump/bounce → replaceColorShader → isHided → paperdolls → outfit.isCreature (mount + drawCreature) or item/effect → resetShader / drawAttachedEffect.
+   */
+  internalDraw(pipeline: DrawPool, dest: any, color: { r: number; g: number; b: number }) {
+    const originalDest = { ...dest, pixelOffsetX: dest.pixelOffsetX ?? 0, pixelOffsetY: dest.pixelOffsetY ?? 0 }
+    let d = { ...dest, pixelOffsetX: dest.pixelOffsetX ?? 0, pixelOffsetY: dest.pixelOffsetY ?? 0 }
+
+    const scaleFactor = pipeline.getScaleFactor?.() ?? 1
+    if (this.m_jumpOffset && (this.m_jumpOffset.x !== 0 || this.m_jumpOffset.y !== 0)) {
+      d.pixelOffsetX -= Math.round(this.m_jumpOffset.x * scaleFactor)
+      d.pixelOffsetY -= Math.round(this.m_jumpOffset.y * scaleFactor)
+    } else if (this.m_bounce.height > 0 && this.m_bounce.speed > 0) {
+      const minH = this.m_bounce.minHeight * scaleFactor
+      const height = this.m_bounce.height * scaleFactor
+      const t = this.m_bounce.timer.ticksElapsed() / (this.m_bounce.speed / 100)
+      const bounceOff = height - Math.abs(height - (t % (height * 2)))
+      d.pixelOffsetY -= minH + bounceOff
+    }
+
+    const white = Creature.COLOR_WHITE
+    const replaceColorShader = color.r !== white.r || color.g !== white.g || color.b !== white.b
+    if (replaceColorShader) {
+      pipeline.setShaderProgram(null)
+    } else {
+      this.drawAttachedEffect(originalDest, d, null, false)
+    }
+
+    if (!this.isHided()) {
+      const animationPhase = this.getCurrentAnimationPhase(pipeline, false)
+      const ct = this.getThingType(pipeline)
+      if (!ct) return
+      const things = pipeline.thingsRef?.current
+      if (!things?.types) return
+      const dir = this.m_walking ? this.m_direction : (this.m_direction ?? 0)
+      const px = ct.patternX ?? ct.m_numPatternX ?? 1
+      const xPattern = px >= 4 ? (dir & 3) : 0
+      const zPattern = this.hasMount() ? Math.min(1, ((ct as any).m_numPatternZ ?? 1) - 1) : 0
+      const numY = this.getNumPatternY()
+
+      if (this.isOutfitCreature()) {
+        if (this.hasMount()) {
+          const mountType = this.getMountThingType(pipeline)
+          if (mountType) {
+            const mountDisp = mountType.getDisplacement?.() ?? mountType.m_displacement ?? { x: 0, y: 0 }
+            d.pixelOffsetX -= (mountDisp.x ?? 0) * scaleFactor
+            d.pixelOffsetY -= (mountDisp.y ?? 0) * scaleFactor
+            if (!replaceColorShader && this.hasMountShader()) {
+              pipeline.setShaderProgram(null)
+            }
+            const mountPhase = this.getCurrentAnimationPhase(pipeline, true)
+            mountType.draw(pipeline, d, 0, xPattern, 0, 0, mountPhase, color, true, null)
+            const myDisp = this.getDisplacement()
+            d.pixelOffsetX += (myDisp.x ?? 0) * scaleFactor
+            d.pixelOffsetY += (myDisp.y ?? 0) * scaleFactor
+          }
+        }
+
+        const useFramebuffer = !replaceColorShader && this.hasShader() && false
+        const drawCreature = (destPt: any) => {
+          for (let yPattern = 0; yPattern < numY; yPattern++) {
+            if (yPattern > 0 && !((this.m_outfit?.addons ?? 0) & (1 << (yPattern - 1)))) continue
+            if (!replaceColorShader && this.hasShader()) {
+              pipeline.setShaderProgram(null)
+            }
+            ct.draw(pipeline, destPt, 0, xPattern, yPattern, zPattern, animationPhase, color, true, null)
+            if (this.m_drawOutfitColor && !replaceColorShader && this.getLayers() > 1) {
+              pipeline.setCompositionMode(1)
+              ct.draw(pipeline, destPt, SpriteMaskYellow, xPattern, yPattern, zPattern, animationPhase, this.getOutfitHeadColor(), true, null)
+              ct.draw(pipeline, destPt, SpriteMaskRed, xPattern, yPattern, zPattern, animationPhase, this.getOutfitBodyColor(), true, null)
+              ct.draw(pipeline, destPt, SpriteMaskGreen, xPattern, yPattern, zPattern, animationPhase, this.getOutfitLegsColor(), true, null)
+              ct.draw(pipeline, destPt, SpriteMaskBlue, xPattern, yPattern, zPattern, animationPhase, this.getOutfitFeetColor(), true, null)
+              pipeline.resetCompositionMode()
+            }
+          }
+        }
+
+        if (useFramebuffer) {
+          pipeline.bindFrameBuffer(null)
+          drawCreature(d)
+          pipeline.releaseFrameBuffer(null)
+          pipeline.resetShaderProgram()
+        } else {
+          drawCreature(d)
+        }
+      } else {
+        const thingType = this.getThingType(pipeline)
+        if (thingType) {
+          let animationPhases = thingType.getAnimationPhases?.() ?? thingType.m_animationPhases ?? 1
+          let animateTicks = 100
+          if (this.isOutfitEffect()) {
+            animationPhases = Math.max(1, animationPhases - 2)
+            animateTicks = 100
+          }
+          let phase = 0
+          if (animationPhases > 1) {
+            const ms = typeof performance !== 'undefined' ? performance.now() : Date.now()
+            phase = Math.floor((ms / animateTicks) % animationPhases)
+          }
+          if (this.isOutfitEffect()) phase = Math.min(phase + 1, animationPhases)
+          if (!replaceColorShader && this.hasShader()) pipeline.setShaderProgram(null)
+          const disp = this.getDisplacement()
+          const itemDest = { ...d, pixelOffsetX: d.pixelOffsetX - (disp.x ?? 0) * scaleFactor, pixelOffsetY: d.pixelOffsetY - (disp.y ?? 0) * scaleFactor }
+          thingType.draw(pipeline, itemDest, 0, 0, 0, 0, phase, color, true, null)
+        }
+      }
+    }
+
+    if (replaceColorShader) {
+      pipeline.resetShaderProgram()
+    } else {
+      this.drawAttachedEffect(originalDest, d, null, true)
+      this.drawAttachedParticlesEffect(originalDest)
+    }
+  }
+
+  /**
+   * OTC: Creature::drawInformation(const MapPosInfo& mapRect, const Point& dest, const int drawFlags)
+   * 1:1 port – same order, same logic; stubs where needed.
+   */
+  drawInformation(mapRect: MapPosInfo, dest: Point, drawFlags: number, pipeline: DrawPool) {
+    const DEFAULT_COLOR = { r: 96, g: 96, b: 96 }
+    const NPC_COLOR = { r: 0x66, g: 0xcc, b: 0xff }
+
+    if (this.isDead() || !this.canBeSeen() || !(drawFlags & DrawFlags.DrawCreatureInfo) || !mapRect.isInRange(this.getPosition()!)) return
+
+    if ((g_game as any).isDrawingInformationByWidget?.() ?? false) {
+      if (this.m_widgetInformation) this.m_widgetInformation.draw(mapRect.rect, 1)
+      return
+    }
+
+    const displacementX = isFeatureEnabled('GameNegativeOffset') ? 0 : this.getDisplacementX()
+    const displacementY = isFeatureEnabled('GameNegativeOffset') ? 0 : this.getDisplacementY()
+
+    const parentRect = mapRect.rect
+    const creatureOffset = { x: 16 - displacementX + this.getDrawOffset().x, y: -displacementY - 2 + this.getDrawOffset().y }
+
+    let p = { x: dest.x - mapRect.drawOffset.x, y: dest.y - mapRect.drawOffset.y }
+    const jump = this.m_jumpOffset ?? { x: 0, y: 0 }
+    p = {
+      x: p.x + (creatureOffset.x - Math.round(jump.x)) * mapRect.scaleFactor,
+      y: p.y + (creatureOffset.y - Math.round(jump.y)) * mapRect.scaleFactor,
+    }
+    p.x *= mapRect.horizontalStretchFactor
+    p.y *= mapRect.verticalStretchFactor
+    p.x += parentRect.x
+    p.y += parentRect.y
+
+    let fillColor = DEFAULT_COLOR
+    if (!this.isCovered()) {
+      if (isFeatureEnabled('GameBlueNpcNameColor') && this.isNpc() && this.isFullHealth()) fillColor = NPC_COLOR
+      else fillColor = this.m_informationColor ?? DEFAULT_COLOR
+    }
+
+    const nameSize = this._getNameTextSize()
+    const cropSizeText = (g_game as any).isAdjustCreatureInformationBasedCropSize?.() ? this.getExactSize() : 12
+    const cropSizeBackGround = (g_game as any).isAdjustCreatureInformationBasedCropSize?.() ? cropSizeText - nameSize.height : 0
+
+    const DEFAULT_DISPLAY_DENSITY = 1
+    const isScaled = (g_game as any).getCreatureInformationScale?.() !== DEFAULT_DISPLAY_DENSITY
+    if (isScaled) {
+      const scale = (g_game as any).getCreatureInformationScale?.() ?? 1
+      p = { x: p.x * scale, y: p.y * scale }
+    }
+
+    let backgroundRect = { x: p.x - 15.5, y: p.y - cropSizeBackGround, width: 31, height: 4 }
+    let textRect = { x: p.x - nameSize.width / 2, y: p.y - cropSizeText, width: nameSize.width, height: nameSize.height }
+
+    const minNameBarSpacing = 2
+    let currentSpacing = backgroundRect.y - (textRect.y + textRect.height)
+    if (currentSpacing < minNameBarSpacing) {
+      backgroundRect = { ...backgroundRect, y: textRect.y + textRect.height + minNameBarSpacing }
+    }
+
+    if (!isScaled) {
+      backgroundRect = this._bindRect(backgroundRect, parentRect)
+      textRect = this._bindRect(textRect, parentRect)
+    }
+
+    let offset = 12 * mapRect.scaleFactor
+    if (this.isLocalPlayer()) offset *= 2 * mapRect.scaleFactor
+
+    if (textRect.y <= parentRect.y) backgroundRect = { ...backgroundRect, y: textRect.y + offset }
+    if (backgroundRect.y + backgroundRect.height >= parentRect.y + parentRect.height) textRect = { ...textRect, y: backgroundRect.y - textRect.height }
+
+    let healthRect = { x: backgroundRect.x + 1, y: backgroundRect.y + 1, width: (this.m_healthPercent ?? 100) / 100 * 29, height: backgroundRect.height - 2 }
+    let barsRect = { ...backgroundRect }
+
+    pipeline.beginCreatureInfo(p, mapRect)
+
+    if ((drawFlags & DrawFlags.DrawBars) && (getClientVersion() >= 1100 ? !this.isNpc() : true)) {
+      pipeline.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
+      pipeline.addFilledRect(healthRect, fillColor)
+
+      if ((drawFlags & DrawFlags.DrawManaBar) && this.isLocalPlayer()) {
+        const player = this.getLocalPlayer()
+        if (player?.isMage?.() && (player.getMaxManaShield?.() ?? 0) > 0) {
+          barsRect = { ...barsRect, y: barsRect.y + barsRect.height }
+          pipeline.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
+          const maxManaShield = player.getMaxManaShield?.() ?? 1
+          const manaShieldRect = { x: barsRect.x + 1, y: barsRect.y + 1, width: (maxManaShield ? (player.getManaShield?.() ?? 0) / maxManaShield : 1) * 29, height: barsRect.height - 2 }
+          pipeline.addFilledRect(manaShieldRect, { r: 0xFF, g: 0x69, b: 0xB4 })
+        }
+        barsRect = { ...barsRect, y: barsRect.y + barsRect.height }
+        pipeline.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
+        const maxMana = player?.getMaxMana?.() ?? 1
+        const manaRect = { x: barsRect.x + 1, y: barsRect.y + 1, width: (maxMana ? (player?.getMana?.() ?? 0) / maxMana : 1) * 29, height: barsRect.height - 2 }
+        pipeline.addFilledRect(manaRect, { r: 0, g: 0, b: 255 })
+      }
+      backgroundRect = { ...barsRect }
+    }
+
+    if ((drawFlags & DrawFlags.DrawHarmony) && this.isLocalPlayer() && isFeatureEnabled('GameVocationMonk')) {
+      const player = this.getLocalPlayer()
+      if (player?.isMonk?.()) {
+        backgroundRect = { ...backgroundRect, y: backgroundRect.y + backgroundRect.height }
+        pipeline.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
+        for (let i = 0; i < 5; i++) {
+          const subBarRect = { x: backgroundRect.x + 1 + i * 6, y: backgroundRect.y + 1, width: 5, height: backgroundRect.height - 2 }
+          const subBarColor = i < (player.getHarmony?.() ?? 0) ? { r: 0xFF, g: 0x98, b: 0x54 } : { r: 64, g: 64, b: 64 }
+          pipeline.addFilledRect(subBarRect, subBarColor)
+        }
+        backgroundRect = { ...backgroundRect, y: backgroundRect.y + backgroundRect.height }
+        const sereneBackgroundRect = { x: backgroundRect.x + (backgroundRect.width / 2) - (11 / 2) - 1, y: backgroundRect.y, width: 11 + 2, height: backgroundRect.height - 2 + 2 }
+        pipeline.addFilledRect(sereneBackgroundRect, { r: 0, g: 0, b: 0 })
+        const sereneColor = player.isSerene?.() ? { r: 0xD4, g: 0x37, b: 0xFF } : { r: 64, g: 64, b: 64 }
+        const sereneSubBarRect = { x: sereneBackgroundRect.x + 1, y: sereneBackgroundRect.y + 1, width: 11, height: backgroundRect.height - 2 }
+        pipeline.addFilledRect(sereneSubBarRect, sereneColor)
+      }
+    }
+
+    pipeline.setDrawOrder(DrawOrder.SECOND)
+
+    if (drawFlags & DrawFlags.DrawNames) {
+      (pipeline as any).setShaderProgram?.(this.m_nameShader ? (globalThis as any).g_shaders?.getShader?.(this.m_nameShader) : null)
+      this._drawName(textRect, fillColor, pipeline)
+      ;(pipeline as any).resetShaderProgram?.()
+      if (this.m_text) {
+        const extraTextSize = this.m_text.getTextSize()
+        const extraTextRect = { x: p.x - extraTextSize.width / 2, y: p.y + 15, width: extraTextSize.width, height: extraTextSize.height }
+        this.m_text.drawText({ x: extraTextRect.x + extraTextRect.width / 2, y: extraTextRect.y + extraTextRect.height / 2 }, extraTextRect)
+      }
+    }
+
+    if (this.m_skull !== SkullNone && this.m_skullTexture)
+      pipeline.addTexturedPos(this.m_skullTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
+    if (this.m_shield !== ShieldNone && this.m_shieldTexture && this.m_showShieldTexture)
+      pipeline.addTexturedPos(this.m_shieldTexture as any, backgroundRect.x + 15.5, backgroundRect.y + 5)
+    if ((this as any).m_emblem !== 0 && this.m_emblemTexture)
+      pipeline.addTexturedPos(this.m_emblemTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 16)
+    if ((this as any).m_type !== 0 && this.m_typeTexture)
+      pipeline.addTexturedPos(this.m_typeTexture as any, backgroundRect.x + 15.5 + 12 + 12, backgroundRect.y + 16)
+    if ((this as any).m_icon !== 0 && this.m_iconTexture)
+      pipeline.addTexturedPos(this.m_iconTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
+    if ((g_game as any).drawTyping?.() && this.getTyping() && this.m_typingIconTexture)
+      pipeline.addTexturedPos(this.m_typingIconTexture as any, p.x + (nameSize.width / 2) + 2, textRect.y - 4)
+    if (getClientVersion() >= 1281 && this.m_icons?.atlasGroups?.length) {
+      for (let iconOffset = 0; iconOffset < this.m_icons!.atlasGroups.length; iconOffset++) {
+        const iconTex = this.m_icons!.atlasGroups[iconOffset]
+        if (!iconTex.texture) continue
+        const destRect = { x: backgroundRect.x + 15.5 + 12, y: backgroundRect.y + 5 + iconOffset * 14, width: iconTex.clip?.width ?? 12, height: iconTex.clip?.height ?? 12 }
+        ;(pipeline as any).addTexturedRect?.(destRect, iconTex.texture, iconTex.clip)
+        if (iconTex.count > 0) {
+          this.m_icons!.numberText.setText(String(iconTex.count))
+          const textSize = this.m_icons!.numberText.getTextSize()
+          const numberRect = { x: destRect.x + destRect.width + 2, y: destRect.y + (destRect.height - textSize.height) / 2, width: textSize.width, height: textSize.height }
+          this.m_icons!.numberText.draw(numberRect, { r: 255, g: 255, b: 255 })
+        }
+      }
+    }
+
+    pipeline.endCreatureInfo()
+    pipeline.resetDrawOrder()
+  }
+
+  private _getNameTextSize(): { width: number; height: number } {
+    const name = (this.m_name || '').trim() || 'Creature'
+    return { width: Math.min(200, name.length * 7), height: 12 }
+  }
+
+  private _drawName(textRect: Rect, fillColor: { r: number; g: number; b: number }, pipeline: DrawPool) {
+    pipeline.addCreatureInfoText((this.m_name || '').trim() || 'Creature', textRect, fillColor)
+  }
+
+  private _bindRect(rect: Rect, parentRect: Rect): Rect {
+    return {
+      x: Math.max(parentRect.x, Math.min(parentRect.x + parentRect.width - rect.width, rect.x)),
+      y: Math.max(parentRect.y, Math.min(parentRect.y + parentRect.height - rect.height, rect.y)),
+      width: rect.width,
+      height: rect.height,
+    }
   }
 
   calculateAnimationPhase(pipeline: DrawPool, animate: boolean) {

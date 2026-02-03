@@ -284,12 +284,25 @@ export class ThingType {
   }
 
   /**
-   * OTC: ThingType::draw(dest, layer, xPattern, yPattern, zPattern, animationPhase, color, drawThings, lightView)
-   * https://github.com/opentibiabr/otclient/blob/main/src/client/thingtype.cpp
-   * addTexturedRect na ordem de chamada — sem pass/renderOrder; pipeline desenha na ordem enqueue.
+   * OTC: void ThingType::draw(dest, layer, xPattern, yPattern, zPattern, animationPhase, color, drawThings, lightView)
+   *
+   * Items:
+   *   layer   – item layer (e.g. in old clients, modified dat used this for tiles that could be fished)
+   *   xPattern – ground pattern 1 / count or fluid-based coordinate
+   *   yPattern – ground pattern 2 / count or fluid-based coordinate
+   *   zPattern – ground pattern 3 (e.g. zaoan roofs)
+   *
+   * Outfits:
+   *   layer   – outfit layer (normal / mask)
+   *   xPattern – direction
+   *   yPattern – addon layer
+   *   zPattern – mounted state
    */
   draw(pipeline: any, dest: any, layer: number, xPattern: number, yPattern: number, zPattern: number, animationPhase: number, color: any, drawThings: boolean, lightView: any) {
-    if (this.m_null || !this.m_animationPhases) return
+    if (this.m_null || this.m_animationPhases === 0) return
+
+    // Outfits like 126 and 127 don't have animation; this line fixes a bug that makes them disappear while moving
+    const animationFrameId = animationPhase % this.m_animationPhases
 
     const things = pipeline.thingsRef?.current
     if (!things?.sprites) return
@@ -297,57 +310,74 @@ export class ThingType {
     const frameGroupIndex = dest?.frameGroupIndex
     const g = frameGroupIndex != null ? this.m_frameGroups?.[frameGroupIndex] : null
     const phases = g ? Math.max(1, g.phases) : Math.max(1, this.m_animationPhases)
-    const animationFrameId = animationPhase % phases
     const texture = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern, frameGroupIndex)
-    if (!texture) return
+    if (!texture) {
+      // Reset any pending onlyOnce state to prevent stale opacity/shader from affecting subsequent draws when texture is still loading
+      pipeline.resetOnlyOnceParameters?.()
+      return
+    }
+
+    const textureData = this.m_textureData[animationFrameId]
+    const frameIndex = this.getTextureIndex(layer, xPattern, yPattern, zPattern)
+    const frameCount = Math.max(1, this.m_layers) * Math.max(1, this.m_numPatternZ) * Math.max(1, this.m_numPatternY) * Math.max(1, this.m_numPatternX)
+    if (frameIndex >= frameCount || (textureData?.pos && frameIndex >= textureData.pos.length)) {
+      pipeline.resetOnlyOnceParameters?.()
+      return
+    }
 
     const TILE_PIXELS = 32
+    const scaleFactor = pipeline.getScaleFactor?.() ?? 1
     const { tileX, tileY, drawElevationPx, tileZ, pixelOffsetX = 0, pixelOffsetY = 0 } = dest
     const bw = g ? g.width : this.getWidth()
     const bh = g ? g.height : this.getHeight()
-    
-    // Displacement moves the sprite to center it on the tile
-    // Tibia convention: positive displacement = move left/up
-    // dx: negative to move left (Three.js X increases right)
-    // dy: positive to move up (will be used directly in Three.js where Y increases up)
-    let dx = -(this.getDisplacementX?.() ?? this.m_displacement?.x ?? 0) / TILE_PIXELS
-    let dy = (this.getDisplacementY?.() ?? this.m_displacement?.y ?? 0) / TILE_PIXELS
-    
-    // PixelOffset is in Tibia coordinates (Y increases down)
-    // For Three.js: X stays same, Y needs to be negated
-    dx += (pixelOffsetX || 0) / TILE_PIXELS
-    dy -= (pixelOffsetY || 0) / TILE_PIXELS  // Negate because Tibia Y is inverted
-    // OTC tile.cpp drawThing: newDest = dest - drawElevation * scaleFactor; thing->draw(newDest); updateElevation(thing, drawElevation).
-    const dyElev = drawElevationPx / TILE_PIXELS
+    const dispX = this.getDisplacementX?.() ?? this.m_displacement?.x ?? 0
+    const dispY = this.getDisplacementY?.() ?? this.m_displacement?.y ?? 0
+    // screenRect: dest + (textureOffset - m_displacement - (m_size - Point(1)) * spriteSize) * scaleFactor
+    // We build one texture per (phase, layer, x, y, z) so textureOffset is implicit; position in tile units:
+    let dx = (-dispX / TILE_PIXELS - (bw - 1)) + (pixelOffsetX || 0) / TILE_PIXELS
+    let dy = (dispY / TILE_PIXELS) - (pixelOffsetY || 0) / TILE_PIXELS + drawElevationPx / TILE_PIXELS
 
-    // Sempre desenhar no grupo do TILE (tileX, tileY) para ground e itens ficarem no mesmo lugar.
-    // Sprites multi-tile (bw/bh > 1): offset para o top-left = -(bw-1), -(bh-1) em unidades de tile.
     const tx0 = tileX
     const ty0 = tileY
     if (tx0 < 0 || tx0 >= pipeline.w || ty0 < 0 || ty0 >= pipeline.h) return
 
-    let drawDx = dx - (bw - 1)
-    let drawDy = dy
-    drawDy += dyElev
-
     const tex = pipeline.texForCanvas?.(texture)
-    if (!tex) return
+    if (!tex) {
+      pipeline.resetOnlyOnceParameters?.()
+      return
+    }
 
-    if (drawThings !== false) {
-      pipeline.addTexturedRect({
-        tileX: tx0,
-        tileY: ty0,
-        texture: tex,
-        width: bw,
-        height: bh,
-        z: tileZ ?? 0,
-        dx: drawDx,
-        dy: drawDy,
-      })
+    if (drawThings && texture) {
+      const newColor = this.m_opacity < 1.0 && color ? { ...color, a: this.m_opacity } : color
+      if (pipeline.shaderNeedFramebuffer?.()) {
+        pipeline.drawWithFrameBuffer?.(tex, { tileX: tx0, tileY: ty0, width: bw, height: bh, z: tileZ ?? 0, dx, dy }, { x: 0, y: 0, w: bw * TILE_PIXELS, h: bh * TILE_PIXELS }, newColor ?? undefined)
+      } else {
+        if (this.m_opacity < 1.0) pipeline.setOpacity?.(this.m_opacity, true)
+        pipeline.addTexturedRect({
+          tileX: tx0,
+          tileY: ty0,
+          texture: tex,
+          width: bw,
+          height: bh,
+          z: tileZ ?? 0,
+          dx,
+          dy,
+          color: newColor ?? undefined,
+        })
+        if (this.m_opacity < 1.0) pipeline.resetOpacity?.()
+      }
+    } else {
+      // Reset any pending onlyOnce state when not drawing things to prevent stale opacity/shader from affecting subsequent draws
+      pipeline.resetOnlyOnceParameters?.()
     }
 
     if (lightView && this.hasLight?.()) {
-      // stub: lightView.addLightSource(...)
+      const light = this.getLight()
+      if (light) {
+        const centerPxX = tx0 * TILE_PIXELS + (bw * TILE_PIXELS) / 2 + dx * TILE_PIXELS * scaleFactor
+        const centerPxY = ty0 * TILE_PIXELS + (bh * TILE_PIXELS) / 2 - dy * TILE_PIXELS * scaleFactor
+        lightView.addLightSource?.(centerPxX, centerPxY, light, 1)
+      }
     }
   }
 

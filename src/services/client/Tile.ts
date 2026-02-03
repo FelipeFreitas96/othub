@@ -12,6 +12,7 @@ import { Creature } from './Creature'
 import { g_map } from './ClientMap'
 import { g_game } from './Game'
 import { Thing } from './types'
+import type { MapPosInfo, Point } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import type { LightView } from './LightView'
@@ -126,12 +127,19 @@ export class Tile {
     return this.m_elevation >= elevation
   }
 
-  /** OTC: Tile::removeThing – erase from m_things, thing->onDisappear() */
   removeThing(thing: Thing): boolean {
+    if (!thing) return false
+    if (thing.isEffect?.()) {
+      const effectIndex = this.m_effects.indexOf(thing)
+      if (effectIndex === -1) return false
+      this.m_effects.splice(effectIndex, 1)
+      return true;
+    }
+
     const thingIndex = this.m_things.indexOf(thing)
     if (thingIndex === -1) return false
     this.m_things.splice(thingIndex, 1)
-    ;(thing as any).onDisappear?.()
+    thing.onDisappear()
     return true
   }
 
@@ -227,7 +235,7 @@ export class Tile {
     }
 
     this.updateThingStackPos()
-    
+
     thing.setPosition(this.m_position, stackPos)
     thing.onAppear()
 
@@ -466,12 +474,30 @@ export class Tile {
       }
       if (thing?.isSingleGround?.()) pipeline.setDrawOrder(DrawOrder.FIRST)
       else if (thing?.isSingleGroundBorder?.()) pipeline.setDrawOrder(DrawOrder.SECOND)
-      // @ts-ignore
-      else if (thing?.isEffect?.() && pipeline.isDrawingEffectsOnTop?.()) pipeline.setDrawOrder(DrawOrder.FOURTH)
+      else if (thing?.isEffect?.() && pipeline.isDrawingEffectsOnTop()) pipeline.setDrawOrder(DrawOrder.FOURTH)
       else pipeline.setDrawOrder(DrawOrder.THIRD)
+      
       thing.draw(pipeline, viewX, viewY, elev, 0, self.z)
+      
       if (state) self.updateElevation(thing, state)
       pipeline.resetDrawOrder()
+
+      if ((drawFlags & DrawFlags.DrawCreatureInfo) && thing.isCreature()) {
+        const creature = thing as Creature
+        const isWalkingHere = this.m_walkingCreatures?.some(c => c.getId?.() === creature.getId?.())
+        if (!isWalkingHere) {
+          const dest: Point = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS }
+          const mapRect: MapPosInfo = {
+            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: pipeline.w * TILE_PIXELS, height: pipeline.h * TILE_PIXELS },
+            drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
+            scaleFactor: pipeline.getScaleFactor?.() ?? 1,
+            horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
+            verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
+            isInRange: state.mapRect?.isInRange ?? (() => true),
+          }
+          creature.drawInformation(mapRect, dest, drawFlags, pipeline)
+        }
+      }
     })
   }
 
@@ -527,8 +553,19 @@ export class Tile {
           }
         }
 
-        creature.draw(pipeline, viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true)
-
+        creature.draw(pipeline, viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true, state.drawFlags ?? 0)
+        if (pipeline && (self as any).m_drawTopAndCreature && creature.drawInformation) {
+          const dest: Point = { x: viewX * spriteSize, y: viewY * spriteSize }
+          const mapRect: MapPosInfo = {
+            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: pipeline.w * spriteSize, height: pipeline.h * spriteSize },
+            drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
+            scaleFactor: pipeline.getScaleFactor?.() ?? 1,
+            horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
+            verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
+            isInRange: state.mapRect?.isInRange ?? (() => true),
+          }
+          creature.drawInformation(mapRect, dest, state.drawFlags ?? 0, pipeline)
+        }
         pipeline.resetDrawOrder()
       })
     }
@@ -591,7 +628,7 @@ export class Tile {
     if (!things) return
 
     this.m_lastDrawDest = { x: viewX, y: viewY }
-    const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY, lightView: lightView ?? null }
+    const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY, lightView: lightView ?? null, drawFlags }
     const steps: Function[] = []
 
     // 1) OTC: for (thing : m_things) { if (!ground && !groundBorder && !onBottom) break; drawThing(thing); updateElevation(thing); }

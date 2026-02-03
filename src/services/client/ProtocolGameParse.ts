@@ -24,10 +24,13 @@ import {
 import { Creature } from './Creature'
 import { Player } from './Player'
 import { g_dispatcher } from '../framework/EventDispatcher'
-import { ThingAttr } from '../things/thingType'
+import { ThingAttr, ThingCategory } from '../things/thingType'
 import { SkillEnum, MagicEffectsTypeEnum, MessageModeEnum } from './Const'
 import { Position, Outfit, Thing } from './types'
 import { Item } from './Item'
+import { Effect } from './Effect'
+import { Missile } from './Missile'
+import { AnimatedText } from './AnimatedText'
 
 /** OTC protocolcodes.h – opcodes servidor → cliente (Proto::GameServer*). */
 const GAME_SERVER_OPCODES = {
@@ -55,19 +58,37 @@ const GAME_SERVER_OPCODES = {
   GameServerMoveCreature: 109,
   GameServerOpenContainer: 110,   // 0x6E – parseOpenContainer
   GameServerCloseContainer: 111,   // 0x6F – parseCloseContainer
+  GameServerCreateContainer: 112,  // 0x70 – parseContainerAddItem
+  GameServerChangeInContainer: 113, // 0x71 – parseContainerUpdateItem
+  GameServerDeleteInContainer: 114, // 0x72 – parseContainerRemoveItem
+  GameServerDeath: 123,           // 0x7B – parseDeath
+  GameServerAmbient: 130,          // 0x82 – parseWorldLight (luz global: dia/subterrâneo)
+  GameServerGraphicalEffect: 131,   // 0x83 – parseMagicEffect
+  GameServerTextEffect: 132,       // 0x84 – parseRemoveMagicEffect (>=1320) or parseAnimatedText
+  GameServerMissleEffect: 133,     // 0x85 – parseDistanceMissile (or parseAnthem)
+  GameServerCreatureData: 139,     // 0x8B – parseCreatureData
   GameServerCreatureHealth: 140,   // 0x8C – parseCreatureHealth
-  GameServerCancelWalk: 181,   // 0xB5 – servidor rejeitou o passo (ex.: andar em parede)
-  GameServerWalkWait: 182,      // 0xB6 – servidor pede esperar N ms antes de andar
+  GameServerCreatureLight: 141,    // 0x8D – parseCreatureLight
+  GameServerCreatureOutfit: 142,   // 0x8E – parseCreatureOutfit
+  GameServerCreatureSpeed: 143,    // 0x8F – parseCreatureSpeed
+  GameServerCreatureSkull: 144,    // 0x90 – parseCreatureSkulls
+  GameServerCreatureParty: 145,    // 0x91 – parseCreatureShields
+  GameServerCreatureUnpass: 146,   // 0x92 – parseCreatureUnpass
+  GameServerCreatureMarks: 147,    // 0x93 – parseCreaturesMark
+  GameServerCreatureType: 149,    // 0x95 – parseCreatureType
   GameServerPlayerData: 160,   // 0xA0 – parsePlayerStats (health, mana, level, etc.)
   GameServerPlayerSkills: 161,   // 0xA1 – parsePlayerSkills
-  GameServerSetInventory: 120,   // 0x78 – parseAddInventoryItem
-  GameServerDeleteInventory: 121,   // 0x79 – parseRemoveInventoryItem
+  GameServerPlayerState: 162,   // 0xA2 – parsePlayerState
+  GameServerClearTarget: 163,     // 0xA3 – parsePlayerCancelAttack
   GameServerTalk: 170,            // 0xAA – parseTalk (creature says: name, level, mode, pos/channelId, text)
   GameServerTextMessage: 180,   // 0xB4 – parseTextMessage (system: damage/heal/exp/channel mgmt)
-  GameServerGraphicalEffect: 131,   // 0x83 – parseMagicEffect
-  GameServerAmbient: 130,          // 0x82 – parseWorldLight (luz global: dia/subterrâneo)
+  GameServerCancelWalk: 181,   // 0xB5 – servidor rejeitou o passo (ex.: andar em parede)
+  GameServerWalkWait: 182,      // 0xB6 – servidor pede esperar N ms antes de andar
+  GameServerFloorChangeUp: 190,    // 0xBE – parseFloorChangeUp
+  GameServerFloorChangeDown: 191,  // 0xBF – parseFloorChangeDown
+  GameServerSetInventory: 120,   // 0x78 – parseAddInventoryItem
+  GameServerDeleteInventory: 121,   // 0x79 – parseRemoveInventoryItem
   GameServerTakeScreenshot: 117,   // 0x75 – parseTakeScreenshot
-  GameServerPlayerState: 162,   // 0xA2 – parsePlayerState
 }
 
 /** OTC: Proto::GameServerFirstGameOpcode – opcodes > este valor indicam pacotes in-game (mapa, etc.). */
@@ -150,11 +171,6 @@ export class ProtocolGameParse {
     MonsterStartId: 0x40000000,
     MonsterEndId: 0x50000000,
   } as const
-
-  /** OTC: addCreatureIcon(msg, creatureId) – consumes creature icon data from message. Stub: no-op. */
-  addCreatureIcon(_msg: InputMessage, _creatureId: number) {
-    // Consume bytes if protocol sends icon data (e.g. clientVersion >= 1281)
-  }
 
   /** OTC: getPaperdoll(msg) – reads one paperdoll entry. Stub: no-op (GameCreaturePaperdoll). */
   getPaperdoll(_msg: InputMessage): unknown {
@@ -351,17 +367,25 @@ export class ProtocolGameParse {
       const stackpos = msg.getU8()
       const pos = new Position(x, y, z)
       const thing = g_map.getThing(pos, stackpos)
-      if (thing) return thing
       const tile = g_map.getTile(pos)
+      const creatures = tile?.m_things?.filter((t) => t.isCreature?.()) ?? []
+      if (thing) {
+        if (thing.isCreature?.()) return thing
+        if (creatures.length === 1) return creatures[0]
+        if (tile?.m_things?.some((t) => t === g_player)) return g_player
+        if (creatures.length > 1) return creatures[0]
+      }
       if (tile?.m_things?.length) {
-        const creatures = tile.m_things.filter((t) => t.isCreature?.())
         if (creatures.length === 1) return creatures[0]
         if (tile.m_things.some((t) => t === g_player)) return g_player
+        if (creatures.length > 1) return creatures[0]
       }
     } else {
       const creatureId = msg.getU32()
       const thing = g_map.getCreatureById(creatureId)
       if (thing) return thing
+      const found = g_map.findCreaturePosition(creatureId)
+      if (found) return g_map.getThing(new Position(found.pos.x, found.pos.y, found.pos.z), found.stackPos)
     }
     return null
   }
@@ -458,6 +482,15 @@ export class ProtocolGameParse {
             this.parseMagicEffect(msg)
             break
 
+          case GAME_SERVER_OPCODES.GameServerTextEffect:
+            if (g_game.getClientVersion() >= 1320) this.parseRemoveMagicEffect(msg)
+            else this.parseAnimatedText(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerMissleEffect:
+            this.parseDistanceMissile(msg)
+            break
+
           case GAME_SERVER_OPCODES.GameServerAmbient:
             this.parseWorldLight(msg)
             break
@@ -514,8 +547,64 @@ export class ProtocolGameParse {
             this.parseCloseContainer(msg)
             break
 
+          case GAME_SERVER_OPCODES.GameServerCreateContainer:
+            this.parseContainerAddItem(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerChangeInContainer:
+            this.parseContainerUpdateItem(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerDeleteInContainer:
+            this.parseContainerRemoveItem(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerDeath:
+            this.parseDeath(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureData:
+            this.parseCreatureData(msg)
+            break
+
           case GAME_SERVER_OPCODES.GameServerCreatureHealth:
             this.parseCreatureHealth(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureLight:
+            this.parseCreatureLight(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureOutfit:
+            this.parseCreatureOutfit(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureSpeed:
+            this.parseCreatureSpeed(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureSkull:
+            this.parseCreatureSkull(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureParty:
+            this.parseCreatureShields(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureUnpass:
+            this.parseCreatureUnpass(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureMarks:
+            this.parseCreaturesMark(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCreatureType:
+            this.parseCreatureType(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerClearTarget:
+            this.parsePlayerCancelAttack(msg)
             break
 
           case GAME_SERVER_OPCODES.GameServerCancelWalk:
@@ -524,6 +613,14 @@ export class ProtocolGameParse {
 
           case GAME_SERVER_OPCODES.GameServerWalkWait:
             this.parseWalkWait(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerFloorChangeUp:
+            this.parseFloorChangeUp(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerFloorChangeDown:
+            this.parseFloorChangeDown(msg)
             break
 
           case GAME_SERVER_OPCODES.GameServerUpdateTile:
@@ -1219,11 +1316,13 @@ export class ProtocolGameParse {
     }
   }
 
+  /** OTC: ProtocolGame::parseMagicEffect – opcode 0x83. */
   parseMagicEffect(msg: InputMessage) {
-    this.getPosition(msg)
+    const pos = this.getPosition(msg)
     const clientVersion = g_game.getClientVersion()
-    const protocolVersion = clientVersion
+    const protocolVersion = (g_game as any).getProtocolVersion?.() ?? clientVersion
     const effectU16 = isFeatureEnabled('GameEffectU16')
+    const types = getThings()?.types
 
     if (protocolVersion >= 1203) {
       let effectType = msg.getU8()
@@ -1234,16 +1333,30 @@ export class ProtocolGameParse {
             msg.getU8()
             break
           case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_DISTANCEEFFECT:
-          case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_DISTANCEEFFECT_REVERSED:
-            if (effectU16) msg.getU16()
-            else msg.getU8()
-            msg.getU8()
-            msg.getU8()
+          case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_DISTANCEEFFECT_REVERSED: {
+            const shotId = effectU16 ? msg.getU16() : msg.getU8()
+            const toSigned8 = (b: number) => (b > 127 ? b - 256 : b)
+            const offsetX = toSigned8(msg.getU8())
+            const offsetY = toSigned8(msg.getU8())
+            if (types && !types.isValidDatId(shotId, ThingCategory.Missile)) break
+            const missile = new Missile()
+            missile.setId(shotId)
+            if (effectType === MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_DISTANCEEFFECT) {
+              missile.setPath(pos, new Position(pos.x + offsetX, pos.y + offsetY, pos.z))
+            } else {
+              missile.setPath(new Position(pos.x + offsetX, pos.y + offsetY, pos.z), pos)
+            }
+            g_map.addThing(missile, pos)
             break
-          case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_EFFECT:
-            if (effectU16) msg.getU16()
-            else msg.getU8()
+          }
+          case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_EFFECT: {
+            const effectId = effectU16 ? msg.getU16() : msg.getU8()
+            if (types && !types.isValidDatId(effectId, ThingCategory.Effect)) break
+            const effect = new Effect()
+            effect.setId(effectId)
+            g_map.addThing(effect, pos)
             break
+          }
           case MagicEffectsTypeEnum.MAGIC_EFFECTS_CREATE_SOUND_MAIN_EFFECT:
             msg.getU8()
             msg.getU16()
@@ -1260,10 +1373,43 @@ export class ProtocolGameParse {
       return
     }
 
-    const effectId = isFeatureEnabled('GameMagicEffectU16') ? msg.getU16() : msg.getU8()
-    if (clientVersion <= 750) {
-      void (effectId + 1)
-    }
+    let effectId = isFeatureEnabled('GameMagicEffectU16') ? msg.getU16() : msg.getU8()
+    if (clientVersion <= 750) effectId += 1
+    if (types && !types.isValidDatId(effectId, ThingCategory.Effect)) return
+    const effect = new Effect()
+    effect.setId(effectId)
+    g_map.addThing(effect, pos)
+  }
+
+  /** OTC: ProtocolGame::parseRemoveMagicEffect – opcode 0x84 when clientVersion >= 1320. */
+  parseRemoveMagicEffect(msg: InputMessage) {
+    const pos = this.getPosition(msg)
+    const effectId = isFeatureEnabled('GameEffectU16') ? msg.getU16() : msg.getU8()
+    if (!getThings()?.types?.isValidDatId(effectId, ThingCategory.Effect)) return
+    const tile = g_map.getTile(pos)
+    if (!tile) return
+    const effect = tile.m_things?.find((t) => t.isEffect?.() && t.getId?.() === effectId)
+    if (effect) g_map.removeThing(effect)
+  }
+
+  /** OTC: ProtocolGame::parseAnimatedText – opcode 0x84 when clientVersion < 1320. */
+  parseAnimatedText(msg: InputMessage) {
+    const position = this.getPosition(msg)
+    const color = msg.getU8()
+    const text = msg.getString()
+    g_map.addAnimatedText(new AnimatedText(text, color), position)
+  }
+
+  /** OTC: ProtocolGame::parseDistanceMissile – opcode 0x85. */
+  parseDistanceMissile(msg: InputMessage) {
+    const fromPos = this.getPosition(msg)
+    const toPos = this.getPosition(msg)
+    const shotId = isFeatureEnabled('GameDistanceEffectU16') ? msg.getU16() : msg.getU8()
+    if (!getThings()?.types?.isValidDatId(shotId, ThingCategory.Missile)) return
+    const missile = new Missile()
+    missile.setId(shotId)
+    missile.setPath(fromPos, toPos)
+    g_map.addThing(missile, fromPos)
   }
 
   parseDistanceEffect(msg: InputMessage) {
@@ -1310,11 +1456,147 @@ export class ProtocolGameParse {
     g_player.setStates(Number(states))
   }
 
+  /** OTC: ProtocolGame::parseCreatureData – opcode 0x8B (139). */
+  parseCreatureData(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const type = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (!creature && typeof console !== 'undefined') {
+      console.debug?.('ProtocolGame::parseCreatureData: could not get creature with id', creatureId)
+    }
+    switch (type) {
+      case 0: // creature update
+        this.getCreature(msg, 0)
+        break
+      case 11: // creature mana percent
+      case 12: // creature show status
+      case 13: // player vocation
+        this.setCreatureVocation(msg, creatureId)
+        break
+      case 14: // creature icons
+        this.addCreatureIcon(msg, creatureId)
+        break
+      default:
+        break
+    }
+  }
+
+  /** OTC: ProtocolGame::setCreatureVocation – creatureData type 11/12/13. */
+  setCreatureVocation(msg: InputMessage, creatureId: number) {
+    const creature = g_map.getCreatureById(creatureId)
+    if (!creature) return
+    const vocationId = msg.getU8()
+    creature.setVocation?.(vocationId)
+  }
+
+  /** OTC: ProtocolGame::addCreatureIcon – creatureData type 14. */
+  addCreatureIcon(msg: InputMessage, creatureId: number) {
+    const creature = g_map.getCreatureById(creatureId)
+    if (!creature) {
+      if (typeof console !== 'undefined') console.debug?.('ProtocolGame::addCreatureIcon: could not get creature with id', creatureId)
+      return
+    }
+    const sizeIcons = msg.getU8()
+    const icons: Array<{ icon: number; category: number; count: number }> = []
+    for (let i = 0; i < sizeIcons; i++) {
+      icons.push({
+        icon: msg.getU8(),
+        category: msg.getU8(),
+        count: msg.getU16(),
+      })
+    }
+    creature.setIcons?.(icons)
+  }
+
   parseCreatureHealth(msg: InputMessage) {
     const creatureId = msg.getU32()
     const healthPercent = msg.getU8()
     const creature = g_map.getCreatureById(creatureId)
     if (creature && creature.setHealthPercent) creature.setHealthPercent(healthPercent)
+  }
+
+  /** OTC: parseCreatureLight – opcode 0x8D (141). */
+  parseCreatureLight(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const intensity = msg.getU8()
+    const color = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) creature.setLight({ intensity, color })
+  }
+
+  /** OTC: parseCreatureOutfit – opcode 0x8E (142). */
+  parseCreatureOutfit(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const outfit = this.getOutfit(msg)
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) creature.setOutfit(outfit)
+  }
+
+  /** OTC: parseCreatureSpeed – opcode 0x8F (143). */
+  parseCreatureSpeed(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const clientVersion = g_game.getClientVersion()
+    const baseSpeed = clientVersion >= 1059 ? msg.getU16() : 0
+    const speed = msg.getU16()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) {
+      creature.setSpeed(speed)
+      if (baseSpeed !== 0) creature.setBaseSpeed(baseSpeed)
+    }
+  }
+
+  /** OTC: parseCreatureSkulls – opcode 0x90 (144). */
+  parseCreatureSkull(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const skull = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) creature.setSkull(skull)
+  }
+
+  /** OTC: parseCreatureShields – opcode 0x91 (145). */
+  parseCreatureShields(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const shield = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) creature.setShield(shield)
+  }
+
+  /** OTC: parseCreatureUnpass – opcode 0x92 (146). */
+  parseCreatureUnpass(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const unpass = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature) creature.setPassable(!unpass)
+  }
+
+  /** OTC: parseCreaturesMark – opcode 0x93 (147). */
+  parseCreaturesMark(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const clientVersion = g_game.getClientVersion()
+    const isPermanent = clientVersion >= 1076 ? msg.getU8() !== 0 : false
+    const markType = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (!creature) return
+    if (markType === 0xff) (creature as any).hideStaticSquare?.()
+    else if (isPermanent) (creature as any).showStaticSquare?.(markType)
+    else (creature as any).addTimedSquare?.(markType)
+  }
+
+  /** OTC: parseCreatureType – opcode 0x95 (149). */
+  parseCreatureType(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const type = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (creature && creature.setType) creature.setType(type)
+  }
+
+  /** OTC: parsePlayerCancelAttack – opcode 0xA3 (163). */
+  parsePlayerCancelAttack(msg: InputMessage) {
+    if (msg.canRead(1)) msg.getU8()
+    g_player.setAttackTarget?.(null)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:clearTarget'))
+    }
   }
 
   parseOpenContainer(msg: InputMessage) {
@@ -1357,6 +1639,55 @@ export class ProtocolGameParse {
     msg.getU8()
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:containerClose'))
+    }
+  }
+
+  /** OTC: parseDeath – opcode 0x7B (123). */
+  parseDeath(msg: InputMessage) {
+    const clientVersion = g_game.getClientVersion()
+    const deathType = isFeatureEnabled('GameDeathType') ? msg.getU8() : 0
+    const penalty = (isFeatureEnabled('GamePenalityOnDeath') && deathType !== 0) ? msg.getU8() : 0
+    if (clientVersion >= 1281) msg.getU8() // can use death redemption
+    g_game.processDeath?.(deathType, penalty)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:death', { detail: { deathType, penalty } }))
+    }
+  }
+
+  /** OTC: parseContainerAddItem – opcode 0x70 (112). */
+  parseContainerAddItem(msg: InputMessage) {
+    const containerId = msg.getU8()
+    const slot = isFeatureEnabled('GameContainerPagination') ? msg.getU16() : 0
+    const item = this.getItem(msg)
+    g_game.processContainerAddItem?.(containerId, item, slot)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:containerAddItem', { detail: { containerId, slot, item } }))
+    }
+  }
+
+  /** OTC: parseContainerUpdateItem – opcode 0x71 (113). */
+  parseContainerUpdateItem(msg: InputMessage) {
+    const containerId = msg.getU8()
+    const slot = isFeatureEnabled('GameContainerPagination') ? msg.getU16() : msg.getU8()
+    const item = this.getItem(msg)
+    g_game.processContainerUpdateItem?.(containerId, slot, item)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:containerUpdateItem', { detail: { containerId, slot, item } }))
+    }
+  }
+
+  /** OTC: parseContainerRemoveItem – opcode 0x72 (114). */
+  parseContainerRemoveItem(msg: InputMessage) {
+    const containerId = msg.getU8()
+    const slot = isFeatureEnabled('GameContainerPagination') ? msg.getU16() : msg.getU8()
+    let lastItem: Item | null = null
+    if (isFeatureEnabled('GameContainerPagination')) {
+      const itemId = msg.getU16()
+      if (itemId !== 0) lastItem = this.getItem(msg)
+    }
+    g_game.processContainerRemoveItem?.(containerId, slot, lastItem)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:containerRemoveItem', { detail: { containerId, slot, lastItem } }))
     }
   }
 
@@ -1426,6 +1757,82 @@ export class ProtocolGameParse {
   parseWalkWait(msg: InputMessage) {
     const millis = msg.canRead(2) ? msg.getU16() : 0
     g_player.lockWalk(millis)
+  }
+
+  /** OTC: read one floor from msg (setFloorDescription for single z, offset 0). Used by parseFloorChangeUp/Down. */
+  _parseFloorDescriptionFromMessage(msg: InputMessage, baseX: number, baseY: number, z: number, width: number, height: number): void {
+    const things = getThings()
+    const readThing = () => {
+      const id = msg.getU16()
+      if (id === 97 || id === 98 || id === 99) return this.getCreature(msg, id)
+      const tt = things.types.getItem(id)
+      let subtype = 1
+      if (tt && (tt.stackable || tt.fluid || tt.splash || tt.chargeable)) {
+        subtype = isFeatureEnabled('GameCountU16') ? msg.getU16() : msg.getU8()
+      }
+      return new Item({ id, subtype }, things.types)
+    }
+    const setTileDescription = (tilePos: Position) => {
+      const tile = g_map.getOrCreateTile(tilePos)
+      if (!tile) return 0
+      tile.m_things = []
+      let gotEffect = false
+      for (let stackPos = 0; stackPos < 256; stackPos++) {
+        if (!msg.canRead(2)) break
+        if (msg.peekU16() >= 0xff00) {
+          const skip = msg.getU16() & 0xff
+          return skip
+        }
+        if (isFeatureEnabled('GameEnvironmentEffect') && !gotEffect) {
+          msg.getU16()
+          gotEffect = true
+          continue
+        }
+        const thing = readThing()
+        if (thing) tile.m_things.push(thing)
+      }
+      return 0
+    }
+    let skip = 0
+    for (let nx = 0; nx < width; nx++) {
+      for (let ny = 0; ny < height; ny++) {
+        const tilePos = new Position(baseX + nx, baseY + ny, z)
+        if (skip === 0) skip = setTileDescription(tilePos)
+        else { g_map.cleanTile(tilePos); skip-- }
+      }
+    }
+  }
+
+  /** OTC: parseFloorChangeUp – opcode 0xBE (190). */
+  parseFloorChangeUp(msg: InputMessage) {
+    const pos = isFeatureEnabled('GameMapMovePosition') ? this.getPosition(msg) : g_map.getCentralPosition()
+    const newZ = pos.z - 1
+    const range = g_map.range
+    const { w, h } = g_map.getAwareDims()
+    const baseX = pos.x - range.left
+    const baseY = pos.y - range.top
+    this._parseFloorDescriptionFromMessage(msg, baseX, baseY, newZ, w, h)
+    const newPos = new Position(pos.x + 1, pos.y + 1, newZ)
+    g_map.setCentralPosition(newPos)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:teleport', { detail: { pos: newPos } }))
+    }
+  }
+
+  /** OTC: parseFloorChangeDown – opcode 0xBF (191). */
+  parseFloorChangeDown(msg: InputMessage) {
+    const pos = isFeatureEnabled('GameMapMovePosition') ? this.getPosition(msg) : g_map.getCentralPosition()
+    const newZ = pos.z + 1
+    const range = g_map.range
+    const { w, h } = g_map.getAwareDims()
+    const baseX = pos.x - range.left
+    const baseY = pos.y - range.top
+    this._parseFloorDescriptionFromMessage(msg, baseX, baseY, newZ, w, h)
+    const newPos = new Position(pos.x - 1, pos.y - 1, newZ)
+    g_map.setCentralPosition(newPos)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:teleport', { detail: { pos: newPos } }))
+    }
   }
 
   /** OTC ProtocolGame::parseMapDescription – protocolgameparse.cpp L1383-1404. */

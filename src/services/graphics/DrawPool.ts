@@ -209,6 +209,7 @@ export class DrawPool {
   m_afterDraw: Function | null
   m_atlas: any
   m_shouldRepaint: boolean
+  m_drawingEffectsOnTop: boolean
   plane: THREE.PlaneGeometry
   tileGroups: THREE.Group[]
   texCache: Map<number, THREE.CanvasTexture | null>
@@ -217,6 +218,12 @@ export class DrawPool {
   curQueueIndex: number
   map: any
   lockedFirstVisibleFloor: number
+  m_creatureInfoOrigin: { x: number; y: number } | null
+  m_creatureInfoDraws: (
+    | { type: 'filled'; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
+    | { type: 'textured'; texture: any; x: number; y: number }
+    | { type: 'text'; text: string; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
+  )[] | null
 
   static create(type: DrawPoolType, opts: any = {}) {
     const pool = new DrawPool(opts)
@@ -279,6 +286,8 @@ export class DrawPool {
     this.m_afterDraw = null
     this.m_atlas = null
     this.m_shouldRepaint = false
+    /** OTC: draw effects on top (DrawOrder.FOURTH) when true */
+    this.m_drawingEffectsOnTop = true
 
     this.plane = new THREE.PlaneGeometry(1, 1)
     
@@ -302,6 +311,8 @@ export class DrawPool {
     this.curQueueIndex = 0
     this.map = null
     this.lockedFirstVisibleFloor = -1
+    this.m_creatureInfoOrigin = null
+    this.m_creatureInfoDraws = null
     if (scene) this.m_type = DrawPoolType.MAP
   }
 
@@ -324,6 +335,20 @@ export class DrawPool {
   getDrawOrder() { return this.m_currentDrawOrder }
   setDrawOrder(order: DrawOrder) { this.m_currentDrawOrder = order }
   resetDrawOrder() { this.m_currentDrawOrder = DrawOrder.FIRST }
+  /** OTC: CompositionMode::MULTIPLY = 1 – for outfit color masks (SpriteMask). */
+  setCompositionMode(mode: number) { this.m_states[this.m_lastStateIndex].compositionMode = mode }
+  resetCompositionMode() { this.m_states[this.m_lastStateIndex].compositionMode = 0 }
+  /** OTC: setShaderProgram(program) – stub. */
+  setShaderProgram(_program: any, _onlyOnce = false) {}
+  /** OTC: resetShaderProgram() – stub. */
+  resetShaderProgram() {}
+  /** OTC: bindFrameBuffer(size) – stub. */
+  bindFrameBuffer(_size: any) {}
+  /** OTC: releaseFrameBuffer(rect) – stub. */
+  releaseFrameBuffer(_rect: any) {}
+  /** OTC: whether effects are drawn on top (DrawOrder.FOURTH) */
+  isDrawingEffectsOnTop() { return this.m_drawingEffectsOnTop }
+  setDrawingEffectsOnTop(v: boolean) { this.m_drawingEffectsOnTop = !!v }
 
   getCurrentState() { return this.m_states[this.m_lastStateIndex] }
   getOpacity() { return this.getCurrentState().opacity }
@@ -383,6 +408,10 @@ export class DrawPool {
     const rect = coordsBuffer != null ? coordsBuffer : (method && (method.dest != null || method.src != null)
       ? { tileX: method.dest?.x ?? 0, tileY: method.dest?.y ?? 0, texture, width: method.dest?.width ?? 1, height: method.dest?.height ?? 1, z: method.intValue ?? 0, dx: 0, dy: 0 }
       : null)
+    if (rect && typeof rect === 'object') {
+      (rect as any).__compositionMode = state.compositionMode
+      ;(rect as any).__multiplyColor = color ?? rect.color
+    }
     if (!list.length || !poolStateEquals(list[list.length - 1].state!, state) || !list[list.length - 1].coords) {
       list.push(makeDrawObjectState(state, rect))
     } else if (rect) {
@@ -398,6 +427,7 @@ export class DrawPool {
     const state = this.getCurrentState()
     let h = 0
     if (this.m_bindedFramebuffers > -1) h = (h * 31 + this.m_lastFramebufferId) | 0
+    if (state.compositionMode !== 0) h = (h * 31 + state.compositionMode) | 0
     if (state.opacity !== 1) h = (h * 31 + (state.opacity * 1000) | 0) | 0
     if (color && (color.r !== 1 || color.g !== 1 || color.b !== 1)) h = (h * 31 + (color.r + color.g * 2 + color.b * 3) | 0) | 0
     // @ts-ignore
@@ -419,11 +449,13 @@ export class DrawPool {
   }
 
   getState(texture: THREE.CanvasTexture | null, textureAtlas: any, color: any) {
+    const current = this.getCurrentState()
     const copy = makePoolState({
-      ...this.getCurrentState(),
-      color: color ?? this.getCurrentState().color,
-      texture: textureAtlas || texture || this.getCurrentState().texture,
-      textureId: texture?.id ?? this.getCurrentState().textureId,
+      ...current,
+      color: color ?? current.color,
+      texture: textureAtlas || texture || current.texture,
+      textureId: texture?.id ?? current.textureId,
+      compositionMode: current.compositionMode,
     })
     return copy
   }
@@ -680,8 +712,9 @@ export class DrawPool {
       return
     }
     const rects = obj.coords == null ? [] : Array.isArray(obj.coords) ? obj.coords : [obj.coords]
+    const state = obj.state ?? null
     for (const rect of rects) {
-      if (rect && (rect.texture || rect.tileX != null)) this._draw(rect)
+      if (rect && (rect.texture || rect.tileX != null)) this._draw(rect, state)
     }
   }
 
@@ -730,10 +763,118 @@ export class DrawPool {
     this.add(rect.color ?? {}, rect.texture, method, rect)
   }
 
+  /** OTC: addFilledRect(rect, color) – creature info; screen-space. Stub: records for creature-info composite. */
+  addFilledRect(rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }) {
+    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'filled', rect: { ...rect }, color: { ...color } })
+    }
+  }
+
+  /** OTC: addTexturedPos(texture, x, y) – creature info; screen-space. Stub: records for creature-info composite. */
+  addTexturedPos(texture: THREE.CanvasTexture | HTMLCanvasElement | null, x: number, y: number) {
+    if (texture && this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'textured', texture, x, y })
+    }
+  }
+
+  /** Creature info: draw text (m_name.draw). Records for composite. */
+  addCreatureInfoText(text: string, rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }) {
+    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'text', text, rect: { ...rect }, color: { ...color } })
+    }
+  }
+
+  /** Start recording creature-info draws; origin p in screen space. */
+  beginCreatureInfo(p: { x: number; y: number }, _mapRect?: any) {
+    this.m_creatureInfoOrigin = { x: p.x, y: p.y }
+    this.m_creatureInfoDraws = []
+  }
+
+  /** Flush recorded creature-info draws to one canvas and addTexturedRect; then stop recording. */
+  endCreatureInfo() {
+    const origin = this.m_creatureInfoOrigin
+    const draws = this.m_creatureInfoDraws
+    this.m_creatureInfoOrigin = null
+    this.m_creatureInfoDraws = null
+    if (!origin || !draws?.length) return
+    let minX = origin.x
+    let minY = origin.y
+    let maxX = origin.x
+    let maxY = origin.y
+    const TEXT_OUTLINE_PADDING = 3 // OTC: name outline (stroke) extends outside text rect
+    for (const d of draws) {
+      if (d.type === 'filled' || d.type === 'text') {
+        const r = d.type === 'filled' ? d.rect : (d as any).rect
+        const pad = d.type === 'text' ? TEXT_OUTLINE_PADDING : 0
+        minX = Math.min(minX, r.x - pad)
+        minY = Math.min(minY, r.y - pad)
+        maxX = Math.max(maxX, r.x + r.width + pad)
+        maxY = Math.max(maxY, r.y + r.height + pad)
+      } else {
+        const tw = 12
+        const th = 12
+        minX = Math.min(minX, d.x)
+        minY = Math.min(minY, d.y)
+        maxX = Math.max(maxX, d.x + tw)
+        maxY = Math.max(maxY, d.y + th)
+      }
+    }
+    const w = Math.ceil(maxX - minX)
+    const h = Math.ceil(maxY - minY)
+    if (w <= 0 || h <= 0) return
+    const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null
+    if (!canvas) return
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    for (const d of draws) {
+      if (d.type === 'filled') {
+        ctx.fillStyle = `rgb(${d.color.r},${d.color.g},${d.color.b})`
+        ctx.fillRect(d.rect.x - minX, d.rect.y - minY, d.rect.width, d.rect.height)
+      } else if (d.type === 'textured') {
+        const tex = d.texture
+        const img = tex && (tex as HTMLCanvasElement).getContext ? tex as HTMLCanvasElement : null
+        if (img) ctx.drawImage(img, d.x - minX, d.y - minY, 12, 12)
+      } else if (d.type === 'text') {
+        ctx.font = '10px sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'alphabetic'
+        const cx = d.rect.x - minX + d.rect.width / 2
+        const cy = d.rect.y - minY + d.rect.height - 2
+        // OTC: name has outline (stroke then fill); stroke drawn first so fill sits on top
+        ctx.strokeStyle = '#000'
+        ctx.lineWidth = 2.5
+        ctx.lineJoin = 'round'
+        ctx.miterLimit = 2
+        ctx.strokeText(d.text, cx, cy)
+        ctx.fillStyle = `rgb(${d.color.r},${d.color.g},${d.color.b})`
+        ctx.fillText(d.text, cx, cy)
+      }
+    }
+    const tex = this.texForCanvas(canvas)
+    if (!tex) return
+    const TILE = 32
+    const tileX = minX / TILE
+    const tileY = minY / TILE
+    const dx = (minX % TILE) / TILE
+    const dy = (minY % TILE) / TILE
+    this.addTexturedRect({
+      tileX,
+      tileY,
+      texture: tex,
+      width: w / TILE,
+      height: h / TILE,
+      z: 0,
+      dx,
+      dy,
+    })
+  }
+
   enqueueDraw(_pass: any, job: any) { this.addTexturedRect(job) }
   flushNow() { this.flush(); this.release(); for (const obj of this.m_objectsDraw[0]) this._executeDrawObject(obj) }
 
-  _draw(rect: any) {
+  _draw(rect: any, state?: PoolState | null) {
     const tileX = rect.tileX ?? 0
     const tileY = rect.tileY ?? 0
     const texture = rect.texture
@@ -743,16 +884,31 @@ export class DrawPool {
     const dx = rect.dx ?? 0
     const dy = rect.dy ?? 0
     
-    // tx/ty são os índices do tileGroup (0..w-1, 0..h-1)
     const tx = Math.max(0, Math.min(this.w - 1, Math.floor(tileX)))
     const ty = Math.max(0, Math.min(this.h - 1, Math.floor(tileY)))
     
     if (!texture || !this.tileGroups.length) return
+    const compositionMode = (rect as any)?.__compositionMode ?? state?.compositionMode
+    const useMultiply = Number(compositionMode) === 1
+    const multiplyColorSrc = useMultiply ? ((rect as any)?.__multiplyColor ?? rect.color ?? state?.color) : null
+    const multiplyColor = multiplyColorSrc && typeof multiplyColorSrc === 'object' && (multiplyColorSrc.r != null || multiplyColorSrc.g != null || multiplyColorSrc.b != null)
+      ? multiplyColorSrc as { r?: number; g?: number; b?: number }
+      : null
     const mat = new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
       depthTest: false,
       depthWrite: false,
+      blending: useMultiply ? THREE.CustomBlending : THREE.NormalBlending,
+      ...(useMultiply ? {
+        blendSrc: THREE.DstColorFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
+        blendSrcAlpha: THREE.OneFactor,
+        blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+      } : {}),
+      color: useMultiply && multiplyColor
+        ? new THREE.Color((multiplyColor.r ?? 255) / 255, (multiplyColor.g ?? 255) / 255, (multiplyColor.b ?? 255) / 255)
+        : new THREE.Color(1, 1, 1),
     })
     const m = new THREE.Mesh(this.plane, mat)
     m.visible = true

@@ -15,6 +15,8 @@ import { Thing, MapView } from './types'
 import type { Light } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { Item } from './Item'
+import { Missile } from './Missile'
+import { AnimatedText } from './AnimatedText'
 
 const SEA_FLOOR = 7
 const MAX_Z = 15
@@ -49,6 +51,8 @@ export class ClientMap {
   m_light: Light = { intensity: 250, color: 215 }
   /** OTC: m_floors[z].missiles – map.cpp removeThing (missile branch). */
   m_floors: Record<number, { missiles: Thing[] }> = {}
+  /** OTC: m_animatedTexts – map.h L248. */
+  m_animatedTexts: AnimatedText[] = []
 
   constructor() {
     this.m_centralPosition = new Position(0, 0, SEA_FLOOR)
@@ -264,10 +268,16 @@ export class ClientMap {
    */
   addThing(thing: Thing, pos: PositionLike, stackPos: number = -1) {
     if (!thing) return
-
     if (thing.isItem() && (thing.getId() == null || thing.getId() === 0)) return
-
-    if (thing.isMissile()) return
+    if (thing.isMissile?.()) {
+      const position = ensurePosition(pos)
+      const z = position.z ?? 0
+      if (!this.m_floors[z]) this.m_floors[z] = { missiles: [] }
+      this.m_floors[z].missiles.push(thing)
+      thing.setPosition(position, 0)
+      thing.onAppear?.()
+      return
+    }
 
     const tile = this.getOrCreateTile(pos)
     if (!tile) return
@@ -281,6 +291,7 @@ export class ClientMap {
       if (thing.isCreature?.()) {
         const id = thing.getId?.()
         if (id != null && tile.m_things.some((t: Thing) => t.isCreature?.() && t.getId?.() === id)) return
+        this.addCreature(thing as Creature)
       }
       tile.addThing(thing, stackPos)
       this.notificateTileUpdate(position, thing, 'add')
@@ -316,6 +327,7 @@ export class ClientMap {
 
     if (thing.isMissile?.()) {
       const pos = thing.getPosition()
+      if (!pos) return false
       const z = pos.z ?? 0
       if (!this.m_floors[z]) return false
       const missileIndex = this.m_floors[z].missiles.indexOf(thing)
@@ -332,6 +344,42 @@ export class ClientMap {
     }
 
     return false
+  }
+
+  /** OTC: void Map::addAnimatedText(const AnimatedTextPtr& txt, const Position& pos) – map.cpp L220. */
+  addAnimatedText(txt: AnimatedText, pos: PositionLike): void {
+    const position = ensurePosition(pos)
+    let merged = false
+    for (const other of this.m_animatedTexts) {
+      const op = other.getPosition()
+      if (op.x === position.x && op.y === position.y && op.z === position.z && other.merge(txt)) {
+        merged = true
+        break
+      }
+    }
+    if (!merged) {
+      this.m_animatedTexts.push(txt)
+    }
+    txt.setPosition(position)
+    txt.onAppear()
+  }
+
+  /** OTC: bool Map::removeAnimatedText(const AnimatedTextPtr& txt) – map.cpp L308. */
+  removeAnimatedText(txt: AnimatedText): boolean {
+    const i = this.m_animatedTexts.indexOf(txt)
+    if (i === -1) return false
+    this.m_animatedTexts.splice(i, 1)
+    return true
+  }
+
+  /** OTC: getAnimatedTexts() – map.h L215. */
+  getAnimatedTexts(): AnimatedText[] {
+    return this.m_animatedTexts
+  }
+
+  /** OTC: getFloorMissiles(z) – mapview.cpp draws missiles per floor. */
+  getFloorMissiles(z: number): Thing[] {
+    return this.m_floors[z]?.missiles ?? []
   }
 
   /** Armazena Creature (OTC: criaturas conhecidas). Aceita Creature ou plain entry. */

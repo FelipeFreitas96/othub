@@ -88,6 +88,34 @@ export class Game {
     }
   }
 
+  /** OTC: Game::processDeath – death opcode 0x7B. Stub: dispatch event. */
+  processDeath(_deathType: number, _penalty: number) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('g_game:processDeath', { detail: { deathType: _deathType, penalty: _penalty } }))
+    }
+  }
+
+  /** OTC: Game::processContainerAddItem – container add opcode 0x70. Stub: dispatch event. */
+  processContainerAddItem(_containerId: number, _item: any, _slot: number) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('g_game:containerAddItem', { detail: { containerId: _containerId, item: _item, slot: _slot } }))
+    }
+  }
+
+  /** OTC: Game::processContainerUpdateItem – container update opcode 0x71. Stub: dispatch event. */
+  processContainerUpdateItem(_containerId: number, _slot: number, _item: any) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('g_game:containerUpdateItem', { detail: { containerId: _containerId, slot: _slot, item: _item } }))
+    }
+  }
+
+  /** OTC: Game::processContainerRemoveItem – container remove opcode 0x72. Stub: dispatch event. */
+  processContainerRemoveItem(_containerId: number, _slot: number, _lastItem: any) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('g_game:containerRemoveItem', { detail: { containerId: _containerId, slot: _slot, lastItem: _lastItem } }))
+    }
+  }
+
   async loginWorld(charInfo: CharacterInfo) {
     if (this.m_protocolGame && this.m_protocolGame.m_connection && this.m_protocolGame.m_connection.connected) {
       return { ok: false, message: 'Unable to login into a world while already online or logging.' }

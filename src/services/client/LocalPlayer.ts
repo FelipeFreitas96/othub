@@ -65,6 +65,8 @@ export class LocalPlayer extends Player {
   m_pending: boolean
   m_inventoryItems: Record<number, Item | null>
   m_idleTimer: number
+  /** OTC: LocalPlayer::m_attackTarget – clear target opcode 163. */
+  m_attackTarget: Creature | null
 
   constructor() {
     super({ id: 0 })
@@ -106,6 +108,15 @@ export class LocalPlayer extends Player {
     this.m_pending = false
     this.m_inventoryItems = {}
     this.m_idleTimer = 0
+    this.m_attackTarget = null
+  }
+
+  /** OTC: LocalPlayer::setAttackTarget(creature) – clear target opcode 163. */
+  setAttackTarget(target: Creature | null) {
+    this.m_attackTarget = target
+  }
+  getAttackTarget(): Creature | null {
+    return this.m_attackTarget
   }
 
   override getId(): number | string { return this.m_id }

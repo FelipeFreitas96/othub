@@ -3,6 +3,7 @@
  * In a separate module to avoid circular deps and ensure DEFAULT_DRAW_FLAGS is always defined.
  */
 
+/** OTC Otc::DrawFlags – match client/const.h */
 export enum DrawFlags {
   DrawGround = 1 << 0,
   DrawGroundBorders = 1 << 1,
@@ -13,6 +14,13 @@ export enum DrawFlags {
   DrawOnTop = 1 << 6,
   DrawAnimations = 1 << 7,
   DrawLights = 1 << 8,
+  /** OTC: DrawCreatureInfo – name, health bar, skull, shield above creature */
+  DrawCreatureInfo = 1 << 9,
+  DrawNames = 1 << 10,
+  DrawBars = 1 << 11,
+  DrawManaBar = 1 << 12,
+  DrawHarmony = 1 << 13,
+  DrawThings = 1 << 14,
 }
 
 export const DEFAULT_DRAW_FLAGS =
@@ -22,4 +30,8 @@ export const DEFAULT_DRAW_FLAGS =
   DrawFlags.DrawItems |
   DrawFlags.DrawCreatures |
   DrawFlags.DrawEffects |
-  DrawFlags.DrawOnTop
+  DrawFlags.DrawOnTop |
+  DrawFlags.DrawCreatureInfo |
+  DrawFlags.DrawThings |
+  DrawFlags.DrawNames |
+  DrawFlags.DrawBars
