@@ -29,7 +29,7 @@ export class MapView {
   m_visibleDimension: { width: number, height: number }
   /** OTC: m_drawDimension – área desenhada (ex.: visibleDimension + Size(3,3) = 18x14). */
   m_drawDimension: { width: number, height: number }
-  /** Atalho para m_drawDimension (loop, pipeline, lightView). */
+  /** Atalho para m_drawDimension (loop, lightView). Uso de pool via g_drawPool. */
   w: number
   h: number
   thingsRef: any
@@ -47,7 +47,6 @@ export class MapView {
   scene: THREE.Scene
   camera: THREE.OrthographicCamera
   renderer: THREE.WebGLRenderer
-  pipeline: DrawPool
   map: GameMap
   _lastCenter: Position | null = null
   /** OTC mapview.h L247: m_lastCameraPosition – usada em updateVisibleTiles e passada em onMapCenterChange. */
@@ -118,12 +117,12 @@ export class MapView {
 
     const debugQueue = typeof window !== 'undefined' && !!(window as any).__otDebugQueue
     const debugDelayMs = typeof window !== 'undefined' ? ((window as any).__otDebugDelayMs ?? 25) : 25
-    this.pipeline = DrawPool.create(DrawPoolType.MAP)
-    this.pipeline.scene = this.scene
-    this.pipeline.w = w
-    this.pipeline.h = h
-    this.pipeline.thingsRef = thingsRef
-    this.pipeline.tileGroups = []
+    const pool = DrawPool.create(DrawPoolType.MAP)
+    pool.scene = this.scene
+    pool.w = w
+    pool.h = h
+    pool.thingsRef = thingsRef
+    pool.tileGroups = []
     const centerX = w / 2
     const centerY = h / 2
     for (let ty = 0; ty < h; ty++) {
@@ -131,12 +130,14 @@ export class MapView {
         const g = new THREE.Group()
         g.position.set(tx - centerX, centerY - ty, 0)
         this.scene.add(g)
-        this.pipeline.tileGroups.push(g)
+        pool.tileGroups.push(g)
       }
     }
     this.map = new GameMap()
-    this.pipeline.setMap(this.map)
-    g_drawPool.setPool(DrawPoolType.MAP, this.pipeline)
+    pool.setMap(this.map)
+    g_drawPool.setPool(DrawPoolType.MAP, pool)
+    g_drawPool.setPool(DrawPoolType.FOREGROUND_MAP, pool)
+    g_drawPool.setPool(DrawPoolType.CREATURE_INFORMATION, pool)
 
     this.resize(host)
   }
@@ -299,8 +300,9 @@ export class MapView {
 
     const things = this.thingsRef?.current
     const types = things?.types
-    this.m_cachedFirstVisibleFloor = this.pipeline.calcFirstVisibleFloor?.(types) ?? this.map.cameraZ ?? 7
-    this.m_cachedLastVisibleFloor = this.pipeline.calcLastVisibleFloor?.(this.m_cachedFirstVisibleFloor) ?? this.map.cameraZ ?? 7
+    g_drawPool.select(DrawPoolType.MAP)
+    this.m_cachedFirstVisibleFloor = g_drawPool.calcFirstVisibleFloor?.(types) ?? this.map.cameraZ ?? 7
+    this.m_cachedLastVisibleFloor = g_drawPool.calcLastVisibleFloor?.(this.m_cachedFirstVisibleFloor) ?? this.map.cameraZ ?? 7
     this.m_cachedFirstVisibleFloor = Math.max(0, Math.min(15, this.m_cachedFirstVisibleFloor))
     this.m_cachedLastVisibleFloor = Math.max(0, Math.min(15, this.m_cachedLastVisibleFloor))
     if (this.m_cachedLastVisibleFloor < this.m_cachedFirstVisibleFloor) this.m_cachedLastVisibleFloor = this.m_cachedFirstVisibleFloor
@@ -373,13 +375,13 @@ export class MapView {
     }
     this.camera.position.set(camX, camY, 10)
     g_drawPool.select(DrawPoolType.MAP)
-    this.pipeline.beginFrame()
+    g_drawPool.beginFrame()
     const lightView = this.m_lightView.isEnabled() ? this.m_lightView : null
     if (lightView) this.m_lightView.clear()
     for (const entry of this.m_cachedVisibleTiles) {
       entry.tile.draw(DEFAULT_DRAW_FLAGS, entry.x, entry.y, lightView)
     }
-    this.pipeline.endFrame()
+    g_drawPool.endFrame()
 
     if (lightView) {
       this.m_lightView.updatePixels()

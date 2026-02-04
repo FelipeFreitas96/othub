@@ -37,7 +37,7 @@ export class Effect extends Thing {
   override isEffect(): boolean { return true }
 
   /** OTC: ThingType* Effect::getThingType() const */
-  override getThingType(_pipeline?: DrawPool): ThingType | null {
+  override getThingType(): ThingType | null {
     const types = getThings()?.types
     if (!types?.isValidDatId?.(Number(this.m_clientId), ThingCategory.Effect)) return null
     return types.getEffect(Number(this.m_clientId)) ?? null

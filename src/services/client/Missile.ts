@@ -40,7 +40,7 @@ export class Missile extends Thing {
   override isMissile(): boolean { return true }
 
   /** OTC: ThingType* Missile::getThingType() const */
-  override getThingType(_pipeline?: DrawPool): ThingType | null {
+  override getThingType(): ThingType | null {
     const types = getThings()?.types
     if (!types) return null
     const id = Number(this.m_clientId)
@@ -147,8 +147,8 @@ export class Missile extends Thing {
       zOff,
       tileZ,
     }
-    tt.draw(pipeline, dest, 0, this.m_numPatternX, this.m_numPatternY, 0, 0, { r: 255, g: 255, b: 255 }, true, null)
-    pipeline.resetDrawOrder?.()
+    tt.draw(dest, 0, this.m_numPatternX, this.m_numPatternY, 0, 0, { r: 255, g: 255, b: 255 }, true, null)
+    g_drawPool.resetDrawOrder?.()
   }
 
   private canDraw(): boolean { return true }

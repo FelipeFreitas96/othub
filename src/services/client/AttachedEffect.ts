@@ -409,7 +409,6 @@ export class AttachedEffect implements IAttachedEffectLike {
       if (this.m_texture) {
         // Texture path: not porting full texture/animated texture; skip draw
       } else if (thingType) {
-        const pipeline = pool as unknown
         const destObj = {
           tileX: 0,
           tileY: 0,
