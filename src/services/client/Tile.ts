@@ -6,7 +6,8 @@
  */
 
 import { DrawFlags } from '../graphics/drawFlags'
-import { DrawOrder, DrawPool } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { DrawOrder } from '../graphics/DrawPool'
 import { Item } from './Item'
 import { Creature } from './Creature'
 import { g_map } from './ClientMap'
@@ -442,7 +443,8 @@ export class Tile {
    * OTC: drawThing(thing, dest, flags, drawElevation, lightView) – free function in tile.cpp
    * newDest = dest - drawElevation * scaleFactor; if (flags == DrawLights) thing->drawLight(newDest, lightView); else setDrawOrder(isSingleGround→FIRST, isSingleGroundBorder→SECOND, isEffect&&isDrawingEffectsOnTop→FOURTH, else THIRD); thing->draw(newDest, flags&DrawThings, lightView); updateElevation; resetDrawOrder().
    */
-  _drawThing(thing: Thing, pipeline: DrawPool, drawFlags: number, drawElevationPx: number, steps: Function[], state?: any) {
+  _drawThing(thing: Thing, drawFlags: number, drawElevationPx: number, steps: Function[], state?: any) {
+    if (!g_drawPool.isValid()) return
     const elev = drawElevationPx
     const self = this
     const viewX = state?.drawX ?? self.x
@@ -469,18 +471,18 @@ export class Tile {
         }
       }
       if (drawFlags & DrawLights) {
-        thing.drawLight?.(pipeline, viewX, viewY, elev, 0, self.z, undefined)
+        thing.drawLight?.(viewX, viewY, elev, 0, self.z, undefined)
         return
       }
-      if (thing?.isSingleGround?.()) pipeline.setDrawOrder(DrawOrder.FIRST)
-      else if (thing?.isSingleGroundBorder?.()) pipeline.setDrawOrder(DrawOrder.SECOND)
-      else if (thing?.isEffect?.() && pipeline.isDrawingEffectsOnTop()) pipeline.setDrawOrder(DrawOrder.FOURTH)
-      else pipeline.setDrawOrder(DrawOrder.THIRD)
+      if (thing?.isSingleGround?.()) g_drawPool.setDrawOrder(DrawOrder.FIRST)
+      else if (thing?.isSingleGroundBorder?.()) g_drawPool.setDrawOrder(DrawOrder.SECOND)
+      else if (thing?.isEffect?.() && g_drawPool.isDrawingEffectsOnTop()) g_drawPool.setDrawOrder(DrawOrder.FOURTH)
+      else g_drawPool.setDrawOrder(DrawOrder.THIRD)
       
-      thing.draw(pipeline, viewX, viewY, elev, 0, self.z)
+      thing.draw(viewX, viewY, elev, 0, self.z)
       
       if (state) self.updateElevation(thing, state)
-      pipeline.resetDrawOrder()
+      g_drawPool.resetDrawOrder()
 
       if ((drawFlags & DrawFlags.DrawCreatureInfo) && thing.isCreature()) {
         const creature = thing as Creature
@@ -488,14 +490,14 @@ export class Tile {
         if (!isWalkingHere) {
           const dest: Point = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS }
           const mapRect: MapPosInfo = {
-            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: pipeline.w * TILE_PIXELS, height: pipeline.h * TILE_PIXELS },
+            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: g_drawPool.w * TILE_PIXELS, height: g_drawPool.h * TILE_PIXELS },
             drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
-            scaleFactor: pipeline.getScaleFactor?.() ?? 1,
+            scaleFactor: g_drawPool.getScaleFactor?.() ?? 1,
             horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
             verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
             isInRange: state.mapRect?.isInRange ?? (() => true),
           }
-          creature.drawInformation(mapRect, dest, drawFlags, pipeline)
+          creature.drawInformation(mapRect, dest, drawFlags)
         }
       }
     })
@@ -506,7 +508,8 @@ export class Tile {
    * 1) Non-walking creatures from m_things (skip if isWalking()).
    * 2) Walking creatures are drawn separately by MapView._drawWalkingCreatures().
    */
-  drawCreature(pipeline: DrawPool, drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
+  drawCreature(drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
+    if (!g_drawPool.isValid()) return
     if (!forceDraw && !this.m_drawTopAndCreature) return
     const { DrawCreatures } = DrawFlags
     if (!(drawFlags & DrawCreatures)) return
@@ -521,7 +524,7 @@ export class Tile {
         if (pos && (pos.x !== this.x || pos.y !== this.y || pos.z !== this.z)) continue
       }
 
-      this._drawThing(thing, pipeline, drawFlags, state.drawElevationPx, steps, state)
+      this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
     }
 
     // Draw walking creatures
@@ -532,7 +535,7 @@ export class Tile {
       const viewY = state?.drawY ?? self.y
       const lightView = state?.lightView as LightView | null | undefined
       steps.push(() => {
-        pipeline.setDrawOrder(DrawOrder.THIRD)
+        g_drawPool.setDrawOrder(DrawOrder.THIRD)
 
         const drawOffset = creature.getDrawOffset()
         const creaturePos = creature.getPosition()
@@ -553,20 +556,20 @@ export class Tile {
           }
         }
 
-        creature.draw(pipeline, viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true, state.drawFlags ?? 0)
-        if (pipeline && (self as any).m_drawTopAndCreature && creature.drawInformation) {
+        creature.draw(viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true, state.drawFlags ?? 0)
+        if (g_drawPool.isValid() && (self as any).m_drawTopAndCreature && creature.drawInformation) {
           const dest: Point = { x: viewX * spriteSize, y: viewY * spriteSize }
           const mapRect: MapPosInfo = {
-            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: pipeline.w * spriteSize, height: pipeline.h * spriteSize },
+            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: g_drawPool.w * spriteSize, height: g_drawPool.h * spriteSize },
             drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
-            scaleFactor: pipeline.getScaleFactor?.() ?? 1,
+            scaleFactor: g_drawPool.getScaleFactor?.() ?? 1,
             horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
             verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
             isInRange: state.mapRect?.isInRange ?? (() => true),
           }
-          creature.drawInformation(mapRect, dest, state.drawFlags ?? 0, pipeline)
+          creature.drawInformation(mapRect, dest, state.drawFlags ?? 0)
         }
-        pipeline.resetDrawOrder()
+        g_drawPool.resetDrawOrder()
       })
     }
   }
@@ -575,7 +578,7 @@ export class Tile {
    * OTC: Tile::drawTop(dest, flags, forceDraw, drawElevation)
    * drawElevation = 0; effects (drawThing → setDrawOrder); onTop items (drawThing).
    */
-  drawTop(pipeline: DrawPool, drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
+  drawTop(drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
     if (!forceDraw && !this.m_drawTopAndCreature) return
     const { DrawEffects, DrawOnTop } = DrawFlags
 
@@ -587,16 +590,16 @@ export class Tile {
       for (const effect of this.m_effects) {
         const self = this
         steps.push(() => {
-          pipeline.setDrawOrder(DrawOrder.FOURTH)
-          effect.draw?.(pipeline, viewX, viewY, 0, 0, self.z)
-          pipeline.resetDrawOrder()
+          g_drawPool.setDrawOrder(DrawOrder.FOURTH)
+          effect.draw?.(viewX, viewY, 0, 0, self.z)
+          g_drawPool.resetDrawOrder()
         })
       }
     }
     if (drawFlags & DrawOnTop && this.hasTopItem()) {
       for (const thing of this.m_things) {
         if (!thing.isOnTop?.()) continue
-        this._drawThing(thing, pipeline, drawFlags, 0, steps, state)
+        this._drawThing(thing, drawFlags, 0, steps, state)
       }
     }
   }
@@ -604,14 +607,14 @@ export class Tile {
   /**
    * OTC: Tile::drawAttachedEffect(dest, dest, lightView, onTop)
    */
-  drawAttachedEffect(pipeline: DrawPool, lightView: any, onTop: boolean) {
+  drawAttachedEffect(lightView: any, onTop: boolean) {
     // No attached effects in this port; stub for 1:1 API.
   }
 
   /**
    * OTC: Tile::drawAttachedParticlesEffect(dest)
    */
-  drawAttachedParticlesEffect(pipeline: DrawPool) {
+  drawAttachedParticlesEffect() {
     // No particles in this port; stub for 1:1 API.
   }
 
@@ -623,8 +626,9 @@ export class Tile {
    * OTC: Tile::draw(dest, flags, lightView) – m_lastDrawDest = dest; depois ground, common, drawCreature, drawTop.
    */
   /** OTC: Tile::draw(dest, scaleFactor, drawFlags, lightView) – luz é adicionada no draw de cada thing (Creature::draw, etc.). */
-  draw(pipeline: DrawPool, drawFlags: number = 0, viewX: number, viewY: number, lightView?: LightView | null) {
-    const things = pipeline.thingsRef?.current
+  draw(drawFlags: number = 0, viewX: number, viewY: number, lightView?: LightView | null) {
+    if (!g_drawPool.isValid()) return
+    const things = g_drawPool.thingsRef?.current
     if (!things) return
 
     this.m_lastDrawDest = { x: viewX, y: viewY }
@@ -637,28 +641,28 @@ export class Tile {
       if (!thing.isGround?.() && !thing.isGroundBorder?.() && !thing.isOnBottom?.())
         break;
 
-      this._drawThing(thing, pipeline, drawFlags, state.drawElevationPx, steps, state)
+      this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
     }
 
-    this.drawAttachedEffect(pipeline, null, false)
+    this.drawAttachedEffect(null, false)
 
     // 2) OTC: if (hasCommonItem()) for (item : reverse(m_things)) if (isCommon()) drawThing(item)
     if (this.hasCommonItem()) {
       for (let i = this.m_things.length - 1; i >= 0; i--) {
         const thing = this.m_things[i]
         if (!this._isCommon(thing)) continue
-        this._drawThing(thing, pipeline, drawFlags, state.drawElevationPx, steps, state)
+        this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
       }
     }
 
     // 3) OTC: drawCreature(dest, flags, false, drawElevation)
-    this.drawCreature(pipeline, drawFlags, false, state, steps)
+    this.drawCreature(drawFlags, false, state, steps)
 
     // 4) OTC: drawTop(dest, flags, false, drawElevation)
-    this.drawTop(pipeline, drawFlags, false, state, steps)
+    this.drawTop(drawFlags, false, state, steps)
 
-    this.drawAttachedEffect(pipeline, null, true)
-    this.drawAttachedParticlesEffect(pipeline)
+    this.drawAttachedEffect(null, true)
+    this.drawAttachedParticlesEffect()
 
     for (const step of steps) step()
   }

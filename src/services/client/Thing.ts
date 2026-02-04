@@ -2,9 +2,10 @@
  * Thing – 1:1 port of OTClient src/client/thing.h + thing.cpp
  * Copyright (c) 2010-2026 OTClient <https://github.com/edubart/otclient>; ported to JS.
  * Base class for Creature, Item, Effect, Missile.
+ * Draw calls use g_drawPool (DrawPoolManager) directly; no pipeline param, like OTClient.
  */
 
-import { DrawPool } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
 import { ThingType } from '../things/thingType'
 import { g_map } from './ClientMap'
 import { Position } from './Position'
@@ -53,8 +54,8 @@ export abstract class Thing {
   isPlayer(): boolean { return false }
   isLocalPlayer(): boolean { return false }
 
-  // ThingType access - abstract, each subclass implements
-  abstract getThingType(pipeline?: DrawPool): ThingType | null
+  // ThingType access - abstract; subclasses use g_drawPool.thingsRef when needed
+  abstract getThingType(): ThingType | null
 
   // Methods that delegate to ThingType (1:1 thing.cpp)
   // Note: These methods check !isCreature() because creatures never have these properties
@@ -99,14 +100,14 @@ export abstract class Thing {
     return !!(tt?.fullGround ?? tt?.isFullGround?.()) 
   }
 
-  getWidth(pipeline?: DrawPool): number { 
-    const tt = this.getThingType(pipeline)
-    return tt?.getWidth?.() ?? tt?.width ?? 1 
+  getWidth(): number {
+    const tt = this.getThingType()
+    return tt?.getWidth?.() ?? tt?.width ?? 1
   }
 
-  getHeight(pipeline?: DrawPool): number { 
-    const tt = this.getThingType(pipeline)
-    return tt?.getHeight?.() ?? tt?.height ?? 1 
+  getHeight(): number {
+    const tt = this.getThingType()
+    return tt?.getHeight?.() ?? tt?.height ?? 1
   }
 
   /** OTC ThingType::isSingleGround() – isGround() && isSingleDimension() (size.area() == 1). */
@@ -123,27 +124,25 @@ export abstract class Thing {
 
   isWalking(): boolean { return false }
 
-  // Drawing - abstract, each subclass implements
+  // Drawing - abstract; use g_drawPool (DrawPoolManager) inside; no pipeline param, like OTClient
   abstract draw(
-    pipeline: DrawPool, 
-    tileX: number, 
-    tileY: number, 
-    drawElevationPx: number, 
-    zOff: number, 
-    tileZ: number, 
-    pixelOffsetX?: number, 
-    pixelOffsetY?: number, 
+    tileX: number,
+    tileY: number,
+    drawElevationPx: number,
+    zOff: number,
+    tileZ: number,
+    pixelOffsetX?: number,
+    pixelOffsetY?: number,
     isWalkDraw?: boolean
   ): void
 
   // Optional light drawing
   drawLight?(
-    pipeline: DrawPool, 
-    tileX: number, 
-    tileY: number, 
-    drawElevationPx: number, 
-    zOff: number, 
-    tileZ: number, 
+    tileX: number,
+    tileY: number,
+    drawElevationPx: number,
+    zOff: number,
+    tileZ: number,
     offset?: { x: number, y: number }
   ): void
 

@@ -2,7 +2,7 @@ import { Tile } from '../client/Tile'
 import { Position } from '../client/Position'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
 import { ThingTypeManager } from '../things/thingTypeManager'
-import { DrawPool } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
 
 /** OTC: MapView lê tiles direto do mapa (g_map.getTile). Interface para GameMap delegar. */
 export interface MapSource {
@@ -136,15 +136,17 @@ export class GameMap {
     this.multifloor = this.zMax > this.zMin
   }
 
-  draw(pipeline: DrawPool) {
-    const things = pipeline.thingsRef.current
+  draw() {
+    if (!g_drawPool.isValid()) return
+    const things = g_drawPool.thingsRef?.current
+    if (!things) return
 
     // Enable multifloor when we have multiple floors available.
     this.multifloor = !!(this.zMax > this.zMin)
 
     // OTClient-style: decide which floors are visible.
-    const firstFloor = pipeline.calcFirstVisibleFloor?.(things.types) ?? (this.zMin ?? this.cameraZ)
-    const lastFloor = pipeline.calcLastVisibleFloor?.(firstFloor) ?? (this.zMax ?? this.cameraZ)
+    const firstFloor = g_drawPool.calcFirstVisibleFloor(things.types)
+    const lastFloor = g_drawPool.calcLastVisibleFloor(firstFloor)
 
     this.zMin = firstFloor
     this.zMax = lastFloor
@@ -154,16 +156,16 @@ export class GameMap {
     const drawFlags = DEFAULT_DRAW_FLAGS
     for (let z = zMax; z >= zMin; z--) {
       this.z = z
-      for (let s = 0; s <= (pipeline.w - 1) + (pipeline.h - 1); s++) {
-        const yStart = Math.max(0, s - (pipeline.w - 1))
-        const yEnd = Math.min(pipeline.h - 1, s)
+      for (let s = 0; s <= (g_drawPool.w - 1) + (g_drawPool.h - 1); s++) {
+        const yStart = Math.max(0, s - (g_drawPool.w - 1))
+        const yEnd = Math.min(g_drawPool.h - 1, s)
         for (let y = yStart; y <= yEnd; y++) {
           const x = s - y
           const t = this.getTile(x, y, z)
           if (!t) continue
           if (!t.isDrawable()) continue
           if (this.isCompletelyCovered(t, firstFloor, things.types)) continue
-          t.draw(pipeline, drawFlags, x, y)
+          t.draw(drawFlags, x, y)
         }
       }
     }

@@ -4,20 +4,18 @@
  */
 
 import * as THREE from 'three'
-import { ThingTypeManager } from '../things/thingTypeManager'
-import { ThingType } from '../things/thingType'
-import { Position, Thing } from '../client/types'
+import { g_painter } from './Painter'
+import type { Rect, Color } from './Painter'
 
-// OTC declarations.h
 const DEFAULT_DISPLAY_DENSITY = 1
 
 /** OTC: enum DrawOrder : uint8_t */
 export enum DrawOrder {
-  FIRST = 0,   // GROUND
-  SECOND = 1,  // BORDER
-  THIRD = 2,   // BOTTOM & TOP
-  FOURTH = 3,  // TOP ~ TOP
-  FIFTH = 4,   // ABOVE ALL - MISSILE
+  FIRST = 0,
+  SECOND = 1,
+  THIRD = 2,
+  FOURTH = 3,
+  FIFTH = 4,
   LAST = 5,
 }
 
@@ -47,29 +45,28 @@ class DrawHashController {
     this.m_lastObjectHash = 0
   }
 
-  put(hash: number | string) {
-    const hashNum = Number(hash)
-    if ((this.m_agroup && this.m_hashs.add(hashNum).has(hashNum) !== false) || this.m_lastObjectHash !== hashNum) {
-      this.m_lastObjectHash = hashNum
-      this.m_currentHash = (this.m_currentHash * 31 + hashNum) | 0
+  put(hash: number): boolean {
+    if ((this.m_agroup && this.m_hashs.add(hash).size >= 0) || this.m_lastObjectHash !== hash) {
+      this.m_lastObjectHash = hash
+      this.m_currentHash = (this.m_currentHash * 31 + hash) | 0
       return true
     }
     return false
   }
 
-  isLast(hash: number | string) {
-    return this.m_lastObjectHash === Number(hash)
+  isLast(hash: number): boolean {
+    return this.m_lastObjectHash === hash
   }
 
-  forceUpdate() {
+  forceUpdate(): void {
     this.m_currentHash = 1
   }
 
-  wasModified() {
+  wasModified(): boolean {
     return this.m_currentHash !== this.m_lastHash
   }
 
-  reset() {
+  reset(): void {
     if (this.m_currentHash !== 1) this.m_lastHash = this.m_currentHash
     this.m_hashs.clear()
     this.m_currentHash = 0
@@ -78,7 +75,7 @@ class DrawHashController {
 }
 
 /** OTC: DrawMethodType */
-enum DrawMethodType {
+export enum DrawMethodType {
   RECT = 0,
   TRIANGLE = 1,
   REPEATED_RECT = 2,
@@ -87,37 +84,56 @@ enum DrawMethodType {
 }
 
 /** OTC: DrawMethod */
-interface DrawMethod {
+export interface DrawMethod {
   type: DrawMethodType
-  dest: { x?: number, y?: number, width?: number, height?: number }
-  src: { x?: number, y?: number, width?: number, height?: number }
-  a: any
-  b: any
-  c: any
-  intValue: number
+  dest: Rect
+  src: Rect
+  a?: { x: number; y: number }
+  b?: { x: number; y: number }
+  c?: { x: number; y: number }
+  intValue?: number
 }
 
-function makeDrawMethod(opts: Partial<DrawMethod> = {}): DrawMethod {
-  return {
-    type: opts.type ?? DrawMethodType.RECT,
-    dest: opts.dest ?? {},
-    src: opts.src ?? {},
-    a: opts.a ?? {}, b: opts.b ?? {}, c: opts.c ?? {},
-    intValue: opts.intValue ?? 0,
-  }
+/** CoordsBuffer – we use rect list (OTC uses vertex arrays). */
+export interface CoordsBufferLike {
+  rects: DrawRect[]
+  append?(other: CoordsBufferLike | null): void
+  clear(): void
 }
 
-/** OTC: PoolState – equality by hash; execute() aplica estado no painter (aqui: stub, usamos só para batching). */
-interface PoolState {
-  transformMatrix: any
+export interface DrawRect {
+  tileX?: number
+  tileY?: number
+  width?: number
+  height?: number
+  z?: number
+  dx?: number
+  dy?: number
+  texture?: unknown
+  color?: Color
+  __compositionMode?: number
+  __multiplyColor?: Color
+}
+
+const STATE_OPACITY = 1 << 0
+const STATE_CLIP_RECT = 1 << 1
+const STATE_SHADER_PROGRAM = 1 << 2
+const STATE_COMPOSITE_MODE = 1 << 3
+const STATE_BLEND_EQUATION = 1 << 4
+
+const DEFAULT_MATRIX3 = null
+
+/** OTC: PoolState */
+export interface PoolState {
+  transformMatrix: unknown
   opacity: number
   compositionMode: number
   blendEquation: number
-  clipRect: any
-  shaderProgram: any
-  action: Function | null
-  color: any
-  texture: THREE.CanvasTexture | null
+  clipRect: Rect
+  shaderProgram: unknown
+  action: (() => void) | null
+  color: Color
+  texture: unknown
   textureId: number
   textureMatrixId: number
   hash: number
@@ -125,14 +141,14 @@ interface PoolState {
 
 function makePoolState(opts: Partial<PoolState> = {}): PoolState {
   return {
-    transformMatrix: opts.transformMatrix ?? null,
+    transformMatrix: opts.transformMatrix ?? DEFAULT_MATRIX3,
     opacity: opts.opacity ?? 1,
     compositionMode: opts.compositionMode ?? 0,
     blendEquation: opts.blendEquation ?? 0,
     clipRect: opts.clipRect ?? {},
     shaderProgram: opts.shaderProgram ?? null,
     action: opts.action ?? null,
-    color: opts.color ?? null,
+    color: opts.color ?? { r: 1, g: 1, b: 1, a: 1 },
     texture: opts.texture ?? null,
     textureId: opts.textureId ?? 0,
     textureMatrixId: opts.textureMatrixId ?? 0,
@@ -140,28 +156,37 @@ function makePoolState(opts: Partial<PoolState> = {}): PoolState {
   }
 }
 
-function poolStateEquals(a: PoolState, b: PoolState) {
-  return a && b && a.hash === b.hash
+function poolStateEquals(a: PoolState, b: PoolState): boolean {
+  return a !== null && b !== null && a.hash === b.hash
 }
 
-/** OTC: DrawObject – either action (lambda) or state + coords; aqui coords = rect (payload para addTexturedRect). */
-interface DrawObject {
-  action: Function | null
-  coords: any | any[] | null
+/** OTC: DrawObject */
+export interface DrawObject {
+  action: (() => void) | null
+  coords: CoordsBufferLike | DrawRect | DrawRect[] | null
   state: PoolState | null
 }
 
-function makeDrawObjectAction(action: Function): DrawObject {
+function makeDrawObjectAction(action: () => void): DrawObject {
   return { action, coords: null, state: null }
 }
 
-function makeDrawObjectState(state: PoolState, rect: any): DrawObject {
-  return { action: null, coords: rect, state }
+function makeDrawObjectState(state: PoolState, coords: CoordsBufferLike | DrawRect | DrawRect[]): DrawObject {
+  return { action: null, coords, state }
+}
+
+/** OTC: hash_combine / hash_union helpers */
+function hashCombine(h: number, v: number): number {
+  return (h * 31 + v) | 0
+}
+
+function rectHash(r: Rect): number {
+  if (!r || (r.x == null && r.y == null && r.width == null && r.height == null)) return 0
+  return ((r.x ?? 0) + (r.y ?? 0) * 1000 + (r.width ?? 0) * 1000000 + (r.height ?? 0) * 1000000000) | 0
 }
 
 /**
  * DrawPool – port 1:1 from OTC drawpool.cpp / drawpool.h
- * Integração: scene/tileGroups/beginFrame/endFrame/addTexturedRect/_draw para Three.js.
  */
 export class DrawPool {
   static FPS1 = 1000 / 1
@@ -169,69 +194,50 @@ export class DrawPool {
   static FPS20 = 1000 / 20
   static FPS60 = 1000 / 60
 
-  id: number
-  scene: THREE.Scene
-  w: number
-  h: number
-  thingsRef: { current: { types: ThingTypeManager, sprites: any } }
-  debugQueue: boolean
-  debugDelayMs: number
-  m_enabled: boolean
-  m_alwaysGroupDrawings: boolean
-  m_bindedFramebuffers: number
-  m_refreshDelay: number
-  m_shaderRefreshDelay: number
-  m_onlyOnceStateFlag: number
-  m_lastFramebufferId: number
-  m_previousOpacity: number
-  m_previousBlendEquation: number
-  m_previousCompositionMode: number
-  m_previousClipRect: any
-  m_previousShaderProgram: any
-  m_previousShaderAction: any
-  m_states: PoolState[]
-  m_lastStateIndex: number
-  m_type: DrawPoolType
-  m_currentDrawOrder: DrawOrder
+  m_enabled: boolean = true
+  m_alwaysGroupDrawings: boolean = false
+  m_bindedFramebuffers: number = -1
+  m_refreshDelay: number = 0
+  m_shaderRefreshDelay: number = 0
+  m_onlyOnceStateFlag: number = 0
+  m_lastFramebufferId: number = 0
+  m_previousOpacity: number = 1
+  m_previousBlendEquation: number = 0
+  m_previousCompositionMode: number = 0
+  m_previousClipRect: Rect = {}
+  m_previousShaderProgram: unknown = null
+  m_previousShaderAction: (() => void) | null = null
+  m_states: PoolState[] = [makePoolState()]
+  m_lastStateIndex: number = 0
+  m_type: DrawPoolType = DrawPoolType.LAST
+  m_currentDrawOrder: DrawOrder = DrawOrder.FIRST
   m_hashCtrl: DrawHashController
-  m_transformMatrixStack: any[]
-  m_temporaryFramebuffers: any[]
-  m_objects: DrawObject[][]
-  m_objectsFlushed: DrawObject[]
-  m_objectsDraw: DrawObject[][]
-  m_coordsCache: any[]
-  m_coords: Map<any, any>
-  m_parameters: Map<any, any>
-  m_scaleFactor: number
-  m_scale: number
-  m_framebuffer: any
-  m_beforeDraw: Function | null
-  m_afterDraw: Function | null
-  m_atlas: any
-  m_shouldRepaint: boolean
-  m_drawingEffectsOnTop: boolean
-  plane: THREE.PlaneGeometry
-  tileGroups: THREE.Group[]
-  texCache: Map<number, THREE.CanvasTexture | null>
-  canvasTexCache: Map<HTMLCanvasElement, THREE.CanvasTexture>
-  timer: any
-  curQueueIndex: number
-  map: any
-  lockedFirstVisibleFloor: number
-  m_creatureInfoOrigin: { x: number; y: number } | null
-  m_creatureInfoDraws: (
-    | { type: 'filled'; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
-    | { type: 'textured'; texture: any; x: number; y: number }
-    | { type: 'text'; text: string; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
-  )[] | null
+  m_transformMatrixStack: unknown[] = []
+  m_temporaryFramebuffers: unknown[] = []
+  m_objects: DrawObject[][] = Array.from({ length: DrawOrder.LAST }, () => [])
+  m_objectsFlushed: DrawObject[] = []
+  m_objectsDraw: [DrawObject[], DrawObject[]] = [[], []]
+  m_coordsCache: CoordsBufferLike[] = []
+  m_coords: Map<number, CoordsBufferLike | null> = new Map()
+  m_parameters: Map<string, unknown> = new Map()
+  m_scaleFactor: number = 1
+  m_scale: number = DEFAULT_DISPLAY_DENSITY
+  m_framebuffer: unknown = null
+  m_beforeDraw: (() => void) | null = null
+  m_afterDraw: (() => void) | null = null
+  m_atlas: unknown = null
+  m_shouldRepaint: boolean = false
+  m_threadLock = { lock: () => {}, unlock: () => {} }
 
-  static create(type: DrawPoolType, opts: any = {}) {
-    const pool = new DrawPool(opts)
+  static create(type: DrawPoolType): DrawPool {
+    const pool = new DrawPool()
     if (type === DrawPoolType.MAP || type === DrawPoolType.FOREGROUND) {
+      pool.setFramebuffer({})
       if (type === DrawPoolType.MAP) {
         // pool.m_framebuffer->m_useAlphaWriting = false; pool->disableBlend();
       } else if (type === DrawPoolType.FOREGROUND) {
         pool.setFPS(10)
+        pool.m_temporaryFramebuffers.push({})
       }
     } else if (type === DrawPoolType.LIGHT) {
       pool.m_hashCtrl = new DrawHashController(true)
@@ -243,133 +249,59 @@ export class DrawPool {
     return pool
   }
 
-  constructor({ scene, w, h, thingsRef, debugQueue = false, debugDelayMs = 25 }: any = {}) {
-    this.id = 0
-    this.scene = scene
-    this.w = w ?? 15
-    this.h = h ?? 11
-    this.thingsRef = thingsRef
-    this.debugQueue = !!debugQueue
-    this.debugDelayMs = Math.max(0, debugDelayMs | 0)
-
-    this.m_enabled = true
-    this.m_alwaysGroupDrawings = false
-    this.m_bindedFramebuffers = -1
-    this.m_refreshDelay = 0
-    this.m_shaderRefreshDelay = 0
-    this.m_onlyOnceStateFlag = 0
-    this.m_lastFramebufferId = 0
-    this.m_previousOpacity = 1
-    this.m_previousBlendEquation = 0
-    this.m_previousCompositionMode = 0
-    this.m_previousClipRect = {}
-    this.m_previousShaderProgram = null
-    this.m_previousShaderAction = null
-
-    this.m_states = [makePoolState()]
-    this.m_lastStateIndex = 0
-    this.m_type = DrawPoolType.LAST
-    this.m_currentDrawOrder = DrawOrder.FIRST
+  constructor(opts?: { scene?: unknown; w?: number; h?: number; thingsRef?: any; tileGroups?: unknown[] }) {
     this.m_hashCtrl = new DrawHashController(false)
-    this.m_transformMatrixStack = []
-    this.m_temporaryFramebuffers = []
-    this.m_objects = Array.from({ length: DrawOrder.LAST }, () => [])
-    this.m_objectsFlushed = []
-    this.m_objectsDraw = [[], []]
-    this.m_coordsCache = []
-    this.m_coords = new Map()
-    this.m_parameters = new Map()
-    this.m_scaleFactor = 1
-    this.m_scale = DEFAULT_DISPLAY_DENSITY
-    this.m_framebuffer = null
-    this.m_beforeDraw = null
-    this.m_afterDraw = null
-    this.m_atlas = null
-    this.m_shouldRepaint = false
-    /** OTC: draw effects on top (DrawOrder.FOURTH) when true */
-    this.m_drawingEffectsOnTop = true
-
-    this.plane = new THREE.PlaneGeometry(1, 1)
-    
-    const centerX = 8
-    const centerY = 6
-
-    this.tileGroups = this.scene ? Array.from({ length: this.w * this.h }, () => new THREE.Group()) : []
-    if (this.scene) {
-      for (let ty = 0; ty < this.h; ty++) {
-        for (let tx = 0; tx < this.w; tx++) {
-          const g = this.tileGroups[ty * this.w + tx]
-          g.position.set(tx - centerX, centerY - ty, 0)
-          this.scene.add(g)
+    if (opts) {
+      this.scene = opts.scene ?? null
+      this.w = opts.w ?? 0
+      this.h = opts.h ?? 0
+      this.thingsRef = opts.thingsRef ?? null
+      this.tileGroups = opts.tileGroups ?? []
+      if (this.scene && this.w > 0 && this.h > 0 && !this.tileGroups.length) {
+        const centerX = this.w / 2
+        const centerY = this.h / 2
+        for (let ty = 0; ty < this.h; ty++) {
+          for (let tx = 0; tx < this.w; tx++) {
+            const g = new THREE.Group()
+            g.position.set(tx - centerX, centerY - ty, 0)
+            ;(this.scene as THREE.Scene).add(g)
+            this.tileGroups.push(g)
+          }
         }
       }
     }
-
-    this.texCache = new Map()
-    this.canvasTexCache = new Map()
-    this.timer = 0
-    this.curQueueIndex = 0
-    this.map = null
-    this.lockedFirstVisibleFloor = -1
-    this.m_creatureInfoOrigin = null
-    this.m_creatureInfoDraws = null
-    if (scene) this.m_type = DrawPoolType.MAP
   }
 
-  setEnable(v: boolean) { this.m_enabled = !!v }
-  isEnabled() { return this.m_enabled }
-  getType() { return this.m_type }
-  isType(type: DrawPoolType) { return this.m_type === type }
-  isValid() { return !this.m_framebuffer || true }
-  hasFrameBuffer() { return this.m_framebuffer != null }
-  getFrameBuffer() { return this.m_framebuffer }
-  repaint() { this.m_hashCtrl.forceUpdate(); (this as any).m_refreshTimer = -1000 }
-  agroup(v: boolean) { this.m_alwaysGroupDrawings = !!v }
-  setScaleFactor(scale: number) { this.m_scaleFactor = scale }
-  getScaleFactor() { return this.m_scaleFactor }
-  isScaled() { return this.m_scaleFactor !== DEFAULT_DISPLAY_DENSITY }
-  onBeforeDraw(f: Function) { this.m_beforeDraw = f }
-  onAfterDraw(f: Function) { this.m_afterDraw = f }
-  getHashController() { return this.m_hashCtrl }
-  shouldRepaint() { return this.m_shouldRepaint }
-  getDrawOrder() { return this.m_currentDrawOrder }
-  setDrawOrder(order: DrawOrder) { this.m_currentDrawOrder = order }
-  resetDrawOrder() { this.m_currentDrawOrder = DrawOrder.FIRST }
-  /** OTC: CompositionMode::MULTIPLY = 1 – for outfit color masks (SpriteMask). */
-  setCompositionMode(mode: number) { this.m_states[this.m_lastStateIndex].compositionMode = mode }
-  resetCompositionMode() { this.m_states[this.m_lastStateIndex].compositionMode = 0 }
-  /** OTC: setShaderProgram(program) – stub. */
-  setShaderProgram(_program: any, _onlyOnce = false) {}
-  /** OTC: resetShaderProgram() – stub. */
-  resetShaderProgram() {}
-  /** OTC: bindFrameBuffer(size) – stub. */
-  bindFrameBuffer(_size: any) {}
-  /** OTC: releaseFrameBuffer(rect) – stub. */
-  releaseFrameBuffer(_rect: any) {}
-  /** OTC: whether effects are drawn on top (DrawOrder.FOURTH) */
-  isDrawingEffectsOnTop() { return this.m_drawingEffectsOnTop }
-  setDrawingEffectsOnTop(v: boolean) { this.m_drawingEffectsOnTop = !!v }
-
-  getCurrentState() { return this.m_states[this.m_lastStateIndex] }
-  getOpacity() { return this.getCurrentState().opacity }
-  getClipRect() { return this.getCurrentState().clipRect }
-  setOpacity(opacity: number, onlyOnce = false) {
-    if (onlyOnce && !(this.m_onlyOnceStateFlag & 1)) {
-      this.m_previousOpacity = this.getCurrentState().opacity
-      this.m_onlyOnceStateFlag |= 1
-    }
-    this.getCurrentState().opacity = opacity
+  setEnable(v: boolean): void {
+    this.m_enabled = !!v
   }
-  setClipRect(clipRect: any, onlyOnce = false) {
-    if (onlyOnce && !(this.m_onlyOnceStateFlag & 2)) {
-      this.m_previousClipRect = { ...this.getCurrentState().clipRect }
-      this.m_onlyOnceStateFlag |= 2
-    }
-    this.getCurrentState().clipRect = clipRect ?? {}
+  getType(): DrawPoolType {
+    return this.m_type
   }
-  resetOpacity() { this.getCurrentState().opacity = 1 }
-  resetClipRect() { this.getCurrentState().clipRect = {} }
-  resetState() {
+  isEnabled(): boolean {
+    return this.m_enabled
+  }
+  isType(type: DrawPoolType): boolean {
+    return this.m_type === type
+  }
+  isValid(): boolean {
+    return !this.m_framebuffer || true
+  }
+  hasFrameBuffer(): boolean {
+    return this.m_framebuffer != null
+  }
+  getFrameBuffer(): unknown {
+    return this.m_framebuffer
+  }
+  canRepaint(): boolean {
+    if (!this.m_enabled || this.shouldRepaint()) return false
+    return this.canRefresh()
+  }
+  repaint(): void {
+    this.m_hashCtrl.forceUpdate()
+    ;(this as any).m_refreshTimer = -1000
+  }
+  resetState(): void {
     this.m_coords.clear()
     this.m_parameters.clear()
     this.m_hashCtrl.reset()
@@ -378,127 +310,319 @@ export class DrawPool {
     this.m_shaderRefreshDelay = 0
     this.m_scale = DEFAULT_DISPLAY_DENSITY
   }
-  nextStateAndReset() {
+  agroup(v: boolean): void {
+    this.m_alwaysGroupDrawings = !!v
+  }
+  setScaleFactor(scale: number): void {
+    this.m_scaleFactor = scale
+  }
+  getScaleFactor(): number {
+    return this.m_scaleFactor
+  }
+  isScaled(): boolean {
+    return this.m_scaleFactor !== DEFAULT_DISPLAY_DENSITY
+  }
+  onBeforeDraw(f: () => void): void {
+    this.m_beforeDraw = f
+  }
+  onAfterDraw(f: () => void): void {
+    this.m_afterDraw = f
+  }
+  getHashController(): DrawHashController {
+    return this.m_hashCtrl
+  }
+  getAtlas(): unknown {
+    return this.m_atlas
+  }
+  shouldRepaint(): boolean {
+    return this.m_shouldRepaint
+  }
+  getDrawOrder(): DrawOrder {
+    return this.m_currentDrawOrder
+  }
+  setDrawOrder(order: DrawOrder): void {
+    this.m_currentDrawOrder = order
+  }
+  resetDrawOrder(): void {
+    this.m_currentDrawOrder = DrawOrder.FIRST
+  }
+  getCurrentState(): PoolState {
+    return this.m_states[this.m_lastStateIndex]
+  }
+  getOpacity(): number {
+    return this.getCurrentState().opacity
+  }
+  getClipRect(): Rect {
+    return this.getCurrentState().clipRect ?? {}
+  }
+  setFPS(fps: number): void {
+    this.m_refreshDelay = Math.floor(1000 / fps)
+  }
+
+  setCompositionMode(mode: number, onlyOnce = false): void {
+    if (onlyOnce && !(this.m_onlyOnceStateFlag & STATE_COMPOSITE_MODE)) {
+      this.m_previousCompositionMode = this.getCurrentState().compositionMode
+      this.m_onlyOnceStateFlag |= STATE_COMPOSITE_MODE
+    }
+    this.getCurrentState().compositionMode = mode
+  }
+  setBlendEquation(equation: number, onlyOnce = false): void {
+    if (onlyOnce && !(this.m_onlyOnceStateFlag & STATE_BLEND_EQUATION)) {
+      this.m_previousBlendEquation = this.getCurrentState().blendEquation
+      this.m_onlyOnceStateFlag |= STATE_BLEND_EQUATION
+    }
+    this.getCurrentState().blendEquation = equation
+  }
+  setClipRect(clipRect: Rect, onlyOnce = false): void {
+    if (onlyOnce && !(this.m_onlyOnceStateFlag & STATE_CLIP_RECT)) {
+      this.m_previousClipRect = { ...(this.getCurrentState().clipRect ?? {}) }
+      this.m_onlyOnceStateFlag |= STATE_CLIP_RECT
+    }
+    this.getCurrentState().clipRect = clipRect ?? {}
+  }
+  setOpacity(opacity: number, onlyOnce = false): void {
+    if (onlyOnce && !(this.m_onlyOnceStateFlag & STATE_OPACITY)) {
+      this.m_previousOpacity = this.getCurrentState().opacity
+      this.m_onlyOnceStateFlag |= STATE_OPACITY
+    }
+    this.getCurrentState().opacity = opacity
+  }
+  setShaderProgram(shaderProgram: unknown, onlyOnce = false, action?: (() => void) | null): void {
+    if (g_painter.isReplaceColorShader(this.getCurrentState().shaderProgram)) return
+    if (onlyOnce && !(this.m_onlyOnceStateFlag & STATE_SHADER_PROGRAM)) {
+      this.m_previousShaderProgram = this.getCurrentState().shaderProgram
+      this.m_previousShaderAction = this.getCurrentState().action
+      this.m_onlyOnceStateFlag |= STATE_SHADER_PROGRAM
+    }
+    if (shaderProgram) {
+      if (!g_painter.isReplaceColorShader(shaderProgram as any)) this.m_shaderRefreshDelay = DrawPool.FPS20
+      this.getCurrentState().shaderProgram = shaderProgram
+      this.getCurrentState().action = action ?? null
+    } else {
+      this.getCurrentState().shaderProgram = null
+      this.getCurrentState().action = null
+    }
+  }
+  resetOpacity(): void {
+    this.getCurrentState().opacity = 1
+  }
+  resetClipRect(): void {
+    this.getCurrentState().clipRect = {}
+  }
+  resetShaderProgram(): void {
+    this.getCurrentState().shaderProgram = null
+    this.getCurrentState().action = null
+  }
+  resetCompositionMode(): void {
+    this.getCurrentState().compositionMode = 0
+  }
+  resetBlendEquation(): void {
+    this.getCurrentState().blendEquation = 0
+  }
+  resetTransformMatrix(): void {
+    this.getCurrentState().transformMatrix = DEFAULT_MATRIX3
+  }
+  bindFrameBuffer(_size: unknown, _color?: Color): void {
+    this.m_bindedFramebuffers++
+    this.m_lastFramebufferId++
+    this.nextStateAndReset()
+  }
+  releaseFrameBuffer(_dest?: Rect, _flipDirection?: number): void {
+    this.backState()
+    this.m_bindedFramebuffers--
+  }
+  setFramebuffer(_size: unknown): void {
+    this.m_framebuffer = {}
+  }
+  removeFramebuffer(): void {
+    this.m_hashCtrl.reset()
+    this.m_framebuffer = null
+  }
+
+  setParameter<T>(name: string, value: T): void {
+    this.m_parameters.set(name, value)
+  }
+  getParameter<T>(name: string): T {
+    return this.m_parameters.get(name) as T
+  }
+  containsParameter(name: string): boolean {
+    return this.m_parameters.has(name)
+  }
+  removeParameter(name: string): void {
+    this.m_parameters.delete(name)
+  }
+
+  resetOnlyOnceParameters(): void {
+    if (this.m_onlyOnceStateFlag === 0) return
+    const s = this.getCurrentState()
+    if (this.m_onlyOnceStateFlag & STATE_OPACITY) s.opacity = this.m_previousOpacity
+    if (this.m_onlyOnceStateFlag & STATE_BLEND_EQUATION) s.blendEquation = this.m_previousBlendEquation
+    if (this.m_onlyOnceStateFlag & STATE_CLIP_RECT) s.clipRect = { ...this.m_previousClipRect }
+    if (this.m_onlyOnceStateFlag & STATE_COMPOSITE_MODE) s.compositionMode = this.m_previousCompositionMode
+    if (this.m_onlyOnceStateFlag & STATE_SHADER_PROGRAM) {
+      s.shaderProgram = this.m_previousShaderProgram
+      s.action = this.m_previousShaderAction
+    }
+    this.m_onlyOnceStateFlag = 0
+  }
+
+  nextStateAndReset(): void {
     this.m_lastStateIndex++
     if (!this.m_states[this.m_lastStateIndex]) this.m_states[this.m_lastStateIndex] = makePoolState()
     this.m_states[this.m_lastStateIndex] = makePoolState()
   }
-  backState() { this.m_lastStateIndex-- }
-
-  resetOnlyOnceParameters() {
-    if (this.m_onlyOnceStateFlag === 0) return
-    const s = this.getCurrentState()
-    if (this.m_onlyOnceStateFlag & 1) s.opacity = this.m_previousOpacity
-    if (this.m_onlyOnceStateFlag & 2) s.clipRect = { ...this.m_previousClipRect }
-    if (this.m_onlyOnceStateFlag & 4) { s.shaderProgram = this.m_previousShaderProgram; s.action = this.m_previousShaderAction }
-    if (this.m_onlyOnceStateFlag & 8) s.compositionMode = this.m_previousCompositionMode
-    if (this.m_onlyOnceStateFlag & 16) s.blendEquation = this.m_previousBlendEquation
-    this.m_onlyOnceStateFlag = 0
+  backState(): void {
+    this.m_lastStateIndex--
   }
 
-  /** OTC: add(color, texture, method, coordsBuffer) – aqui coordsBuffer = rect (payload do addTexturedRect). */
-  add(color: any, texture: THREE.CanvasTexture | null, method: DrawMethod, coordsBuffer: any) {
+  private canRefresh(): boolean {
+    let refreshDelay = this.m_refreshDelay
+    if (this.m_shaderRefreshDelay > 0 && (refreshDelay === 0 || this.m_shaderRefreshDelay < refreshDelay))
+      refreshDelay = this.m_shaderRefreshDelay
+    return refreshDelay > 0 && ((this as any).m_refreshTimer ?? 0) <= -1000
+  }
+
+  add(color: Color, texture: unknown, method: DrawMethod, coordsBuffer?: CoordsBufferLike | DrawRect | null): void {
     const hasCoord = coordsBuffer != null
-    if (!this.updateHash(method ?? makeDrawMethod(), texture, color ?? {}, hasCoord)) {
+    let textureAtlas: unknown = null
+
+    if (texture && !method.src?.width && !method.src?.height && !coordsBuffer) {
       this.resetOnlyOnceParameters()
       return
     }
+
+    if (!this.updateHash(method, texture as any, color ?? {}, hasCoord)) {
+      this.resetOnlyOnceParameters()
+      return
+    }
+
     const list = this.m_objects[this.m_currentDrawOrder]
-    const state = this.getState(texture, null, color ?? {})
-    const rect = coordsBuffer != null ? coordsBuffer : (method && (method.dest != null || method.src != null)
-      ? { tileX: method.dest?.x ?? 0, tileY: method.dest?.y ?? 0, texture, width: method.dest?.width ?? 1, height: method.dest?.height ?? 1, z: method.intValue ?? 0, dx: 0, dy: 0 }
-      : null)
-    if (rect && typeof rect === 'object') {
-      (rect as any).__compositionMode = state.compositionMode
-      ;(rect as any).__multiplyColor = color ?? rect.color
-    }
-    if (!list.length || !poolStateEquals(list[list.length - 1].state!, state) || !list[list.length - 1].coords) {
-      list.push(makeDrawObjectState(state, rect))
-    } else if (rect) {
+    const state = this.getState(texture, textureAtlas, color ?? {})
+
+    const coords: CoordsBufferLike | DrawRect | DrawRect[] = coordsBuffer != null
+      ? (coordsBuffer as CoordsBufferLike | DrawRect)
+      : this.addCoordsToRects(method, state, color)
+
+    if (!list.length || !list[list.length - 1].coords || !poolStateEquals(list[list.length - 1].state!, state)) {
+      list.push(makeDrawObjectState(state, coords as CoordsBufferLike))
+    } else if (this.m_alwaysGroupDrawings) {
+      const key = state.hash
+      let buf = this.m_coords.get(key)
+      if (!buf) {
+        buf = { rects: [], clear() { this.rects.length = 0 }, append(o) { if (o?.rects) this.rects.push(...o.rects); else if (Array.isArray(o)) this.rects.push(...o); else this.rects.push(o as DrawRect) } }
+        list.push(makeDrawObjectState(state, buf))
+        this.m_coords.set(key, buf)
+      }
+      if (coordsBuffer && typeof (coordsBuffer as CoordsBufferLike).append === 'function')
+        (buf as CoordsBufferLike).append!(coordsBuffer as CoordsBufferLike)
+      else if (Array.isArray(coords)) (buf as CoordsBufferLike).rects.push(...coords)
+      else (buf as CoordsBufferLike).rects.push(coords as DrawRect)
+    } else {
       const last = list[list.length - 1]
-      if (last.coords && typeof last.coords === 'object' && !Array.isArray(last.coords)) last.coords = [last.coords]
-      if (last.coords) (last.coords as any[]).push(rect)
-      else list.push(makeDrawObjectState(state, rect))
+      if (last.coords && typeof (last.coords as CoordsBufferLike).append === 'function')
+        (last.coords as CoordsBufferLike).append!(coords as CoordsBufferLike)
+      else if (Array.isArray(last.coords)) (last.coords as DrawRect[]).push(...(Array.isArray(coords) ? coords : [coords as DrawRect]))
+      else last.coords = [last.coords as DrawRect, ...(Array.isArray(coords) ? coords : [coords as DrawRect])]
     }
+
     this.resetOnlyOnceParameters()
   }
 
-  updateHash(method: DrawMethod, texture: THREE.CanvasTexture | null, color: any, hasCoord: boolean) {
+  private addCoordsToRects(method: DrawMethod, state: PoolState, color: Color): DrawRect | DrawRect[] {
+    const dest = method.dest ?? {}
+    const r: DrawRect = {
+      tileX: (dest as any).x ?? 0,
+      tileY: (dest as any).y ?? 0,
+      width: (dest as any).width ?? 1,
+      height: (dest as any).height ?? 1,
+      z: method.intValue ?? 0,
+      dx: 0,
+      dy: 0,
+      __compositionMode: state.compositionMode,
+      __multiplyColor: color as any,
+    }
+    return r
+  }
+
+  updateHash(method: DrawMethod, texture: { hash?: () => number; id?: number } | null, color: Color, hasCoord: boolean): boolean {
     const state = this.getCurrentState()
     let h = 0
-    if (this.m_bindedFramebuffers > -1) h = (h * 31 + this.m_lastFramebufferId) | 0
-    if (state.compositionMode !== 0) h = (h * 31 + state.compositionMode) | 0
-    if (state.opacity !== 1) h = (h * 31 + (state.opacity * 1000) | 0) | 0
-    if (color && (color.r !== 1 || color.g !== 1 || color.b !== 1)) h = (h * 31 + (color.r + color.g * 2 + color.b * 3) | 0) | 0
-    // @ts-ignore
-    if (texture && typeof texture.hash === 'function') h = (h * 31 + texture.hash()) | 0
-    // @ts-ignore
-    else if (texture && texture.id) h = (h * 31 + texture.id) | 0
-    if (hasCoord && method) {
-      if (method.dest) h = (h * 31 + (method.dest.x! + method.dest.y! * 1000) | 0) | 0
-      if (method.src) h = (h * 31 + (method.src.x! + method.src.y! * 1000) | 0) | 0
-    }
+    if (this.m_bindedFramebuffers > -1) h = hashCombine(h, this.m_lastFramebufferId)
+    if (state.blendEquation !== 0) h = hashCombine(h, state.blendEquation)
+    if (state.compositionMode !== 0) h = hashCombine(h, state.compositionMode)
+    if (state.opacity < 1) h = hashCombine(h, (state.opacity * 1000) | 0)
+    if (state.clipRect && (state.clipRect.x != null || state.clipRect.width != null)) h = hashCombine(h, rectHash(state.clipRect))
+    if (state.shaderProgram) h = hashCombine(h, 1)
+    if (state.transformMatrix != null) h = hashCombine(h, 2)
+    if (color && ((color as any).r !== 1 || (color as any).g !== 1 || (color as any).b !== 1)) h = hashCombine(h, ((color as any).r ?? 0) + ((color as any).g ?? 0) * 2 + ((color as any).b ?? 0) * 3)
+    if (texture) h = hashCombine(h, typeof texture.hash === 'function' ? texture.hash() : (texture.id ?? 0))
     state.hash = h
+
     if (this.hasFrameBuffer()) {
       let poolHash = state.hash
-      if (method?.dest) poolHash = (poolHash * 31 + (method.dest.x! + method.dest.y! * 1000) | 0) | 0
+      if (method.type === DrawMethodType.TRIANGLE) {
+        if (method.a) poolHash = hashCombine(poolHash, (method.a.x ?? 0) + (method.a.y ?? 0) * 1000)
+        if (method.b) poolHash = hashCombine(poolHash, (method.b.x ?? 0) + (method.b.y ?? 0) * 1000)
+        if (method.c) poolHash = hashCombine(poolHash, (method.c!.x ?? 0) + (method.c!.y ?? 0) * 1000)
+      } else if (method.type === DrawMethodType.BOUNDING_RECT) {
+        if (method.intValue) poolHash = hashCombine(poolHash, method.intValue)
+      } else {
+        if (method.dest && (method.dest as any).width != null) poolHash = hashCombine(poolHash, rectHash(method.dest))
+        if (method.src && (method.src as any).width != null) poolHash = hashCombine(poolHash, rectHash(method.src))
+      }
       if (!hasCoord && this.m_hashCtrl.isLast(poolHash)) return false
       this.m_hashCtrl.put(poolHash)
     }
     return true
   }
 
-  getState(texture: THREE.CanvasTexture | null, textureAtlas: any, color: any) {
-    const current = this.getCurrentState()
-    const copy = makePoolState({
-      ...current,
-      color: color ?? current.color,
-      texture: textureAtlas || texture || current.texture,
-      textureId: texture?.id ?? current.textureId,
-      compositionMode: current.compositionMode,
-    })
+  getState(texture: unknown, textureAtlas: unknown, color: Color): PoolState {
+    const copy = makePoolState({ ...this.getCurrentState() })
+    if ((copy.color as any)?.r !== (color as any)?.r || (copy.color as any)?.g !== (color as any)?.g || (copy.color as any)?.b !== (color as any)?.b)
+      copy.color = color as any
+    if (textureAtlas) {
+      copy.textureId = (textureAtlas as any)?.id ?? 0
+      copy.textureMatrixId = (textureAtlas as any)?.matrixId ?? 0
+    } else if (texture) {
+      copy.texture = texture
+      copy.textureId = (texture as any)?.id ?? 0
+      copy.textureMatrixId = 0
+    }
     return copy
   }
 
-  setFPS(fps: number) { this.m_refreshDelay = 1000 / fps }
-
-  /** OTC: addAction(action, hash) – MAP pool usa order THIRD. */
-  addAction(action: Function, hash = 0) {
+  addAction(action: () => void, hash = 0): void {
     const order = this.m_type === DrawPoolType.MAP ? DrawOrder.THIRD : DrawOrder.FIRST
     this.m_objects[order].push(makeDrawObjectAction(action))
     if (this.hasFrameBuffer() && hash > 0 && !this.m_hashCtrl.isLast(hash)) this.m_hashCtrl.put(hash)
   }
 
-  /** OTC: flush() – merge m_objects into m_objectsFlushed by DrawOrder; merge consecutive same state. */
-  flush() {
-    this.m_coords.clear()
-    for (let o = 0; o < DrawOrder.LAST; o++) {
-      const objs = this.m_objects[o]
-      let addFirst = true
-      if (objs.length && this.m_objectsFlushed.length) {
-        const last = this.m_objectsFlushed[this.m_objectsFlushed.length - 1]
-        const first = objs[0]
-        if (poolStateEquals(last.state!, first.state!) && last.coords && first.coords) {
-          if (Array.isArray(last.coords)) last.coords.push(...(Array.isArray(first.coords) ? first.coords : [first.coords]))
-          else last.coords = [last.coords, ...(Array.isArray(first.coords) ? first.coords : [first.coords])]
-          addFirst = false
-        }
-      }
-      if (objs.length) {
-        const start = addFirst ? 0 : 1
-        for (let i = start; i < objs.length; i++) this.m_objectsFlushed.push(objs[i])
-        objs.length = 0
+  getCoordsBuffer(): CoordsBufferLike {
+    let buf = this.m_coordsCache.pop()
+    if (!buf) {
+      buf = {
+        rects: [],
+        clear() { this.rects.length = 0 },
+        append(o: CoordsBufferLike | DrawRect[] | null) {
+          if (!o) return
+          if ((o as CoordsBufferLike).rects) this.rects.push(...(o as CoordsBufferLike).rects)
+          else if (Array.isArray(o)) this.rects.push(...o)
+          else this.rects.push(o as DrawRect)
+        },
       }
     }
+    buf.rects.length = 0
+    return buf
   }
 
-  /** OTC: release() – merge m_objectsFlushed + m_objects into m_objectsDraw[0], set m_shouldRepaint. */
-  release() {
-    if (this.hasFrameBuffer() && !this.m_hashCtrl.wasModified()) {
+  release(): void {
+    if (this.hasFrameBuffer() && !this.m_hashCtrl.wasModified() && !this.canRefresh()) {
       for (const objs of this.m_objects) objs.length = 0
       this.m_objectsFlushed.length = 0
       return
     }
+    ;(this as any).m_refreshTimer = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - 1000
+
     this.m_objectsDraw[0].length = 0
     if (this.m_objectsFlushed.length) {
       this.m_objectsDraw[0].push(...this.m_objectsFlushed)
@@ -510,8 +634,10 @@ export class DrawPool {
         const last = this.m_objectsDraw[0][this.m_objectsDraw[0].length - 1]
         const first = objs[0]
         if (poolStateEquals(last.state!, first.state!) && last.coords && first.coords) {
-          if (Array.isArray(last.coords)) last.coords.push(...(Array.isArray(first.coords) ? first.coords : [first.coords]))
-          else last.coords = [last.coords, ...(Array.isArray(first.coords) ? first.coords : [first.coords])]
+          const lc = last.coords as CoordsBufferLike
+          const fc = first.coords as CoordsBufferLike
+          if (lc.append && fc.rects) lc.append(fc)
+          else if (Array.isArray(lc)) (last.coords as DrawRect[]).push(...(Array.isArray(fc) ? fc : [fc as DrawRect]))
           addFirst = false
         }
       }
@@ -524,108 +650,248 @@ export class DrawPool {
     this.m_shouldRepaint = true
   }
 
-  scale(factor: number) {
+  flush(): void {
+    this.m_coords.clear()
+    for (const objs of this.m_objects) {
+      let addFirst = true
+      if (objs.length && this.m_objectsFlushed.length) {
+        const last = this.m_objectsFlushed[this.m_objectsFlushed.length - 1]
+        const first = objs[0]
+        if (poolStateEquals(last.state!, first.state!) && last.coords && first.coords) {
+          const lc = last.coords as CoordsBufferLike
+          const fc = first.coords as CoordsBufferLike
+          if (lc.append && fc.rects) lc.append(fc)
+          addFirst = false
+        }
+      }
+      const start = addFirst ? 0 : 1
+      for (let i = start; i < objs.length; i++) this.m_objectsFlushed.push(objs[i])
+      objs.length = 0
+    }
+  }
+
+  scale(factor: number): void {
     if (this.m_scale === factor) return
     this.m_scale = factor
     this.getCurrentState().transformMatrix = { scale: factor }
   }
 
-  translate(x: number, y: number) {
+  translate(x: number, y: number): void {
     const s = this.getCurrentState()
-    s.transformMatrix = s.transformMatrix || {}
-    s.transformMatrix.translate = s.transformMatrix.translate || { x: 0, y: 0 }
-    s.transformMatrix.translate.x += x
-    s.transformMatrix.translate.y += y
+    const t = (s.transformMatrix as any) || {}
+    const tr = t.translate || { x: 0, y: 0 }
+    this.getCurrentState().transformMatrix = { ...t, translate: { x: tr.x + x, y: tr.y + y } }
   }
 
-  rotate(angle: number) {
-    this.getCurrentState().transformMatrix = this.getCurrentState().transformMatrix || {}
-    this.getCurrentState().transformMatrix.rotate = angle
+  rotate(angle: number): void {
+    const s = this.getCurrentState()
+    this.getCurrentState().transformMatrix = { ...(s.transformMatrix as any), rotate: angle }
   }
 
-  pushTransformMatrix() {
-    this.m_transformMatrixStack.push({ ...this.getCurrentState().transformMatrix })
+  rotateXY(x: number, y: number, angle: number): void {
+    this.translate(-x, -y)
+    this.rotate(angle)
+    this.translate(x, y)
   }
 
-  popTransformMatrix() {
-    if (this.m_transformMatrixStack.length) {
-      this.getCurrentState().transformMatrix = this.m_transformMatrixStack.pop()
+  pushTransformMatrix(): void {
+    this.m_transformMatrixStack.push(this.getCurrentState().transformMatrix)
+  }
+
+  popTransformMatrix(): void {
+    if (this.m_transformMatrixStack.length)
+      this.getCurrentState().transformMatrix = this.m_transformMatrixStack.pop()!
+  }
+
+  /** PoolState::execute(DrawPool*) – apply state to painter then draw coords. */
+  static executeState(state: PoolState, pool: DrawPool): void {
+    g_painter.setColor(state.color as any)
+    g_painter.setOpacity(state.opacity)
+    g_painter.setCompositionMode(state.compositionMode)
+    g_painter.setBlendEquation(state.blendEquation)
+    g_painter.setClipRect(state.clipRect ?? {})
+    g_painter.setShaderProgram(state.shaderProgram)
+    g_painter.setTransformMatrix(state.transformMatrix)
+    if (state.action) state.action()
+    if (state.texture) {
+      g_painter.setTexture(state.texture as any)
+    } else {
+      g_painter.setTexture(state.textureId, state.textureMatrixId)
     }
   }
 
-  // —— Integração com o resto do projeto (MapView, Tile, ThingType) ——
+  // —— Project integration: draw target (scene/tileGroups), thingsRef, addTexturedRect(rect), creature info ——
+  scene: unknown = null
+  tileGroups: unknown[] = []
+  w: number = 0
+  h: number = 0
+  thingsRef: { current: { types: unknown; sprites: unknown } } | null = null
+  map: unknown = null
+  m_drawingEffectsOnTop: boolean = true
+  m_creatureInfoOrigin: { x: number; y: number } | null = null
+  m_creatureInfoDraws: Array<
+    | { type: 'filled'; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
+    | { type: 'textured'; texture: unknown; x: number; y: number }
+    | { type: 'text'; text: string; rect: { x: number; y: number; width: number; height: number }; color: { r: number; g: number; b: number } }
+  > | null = null
 
-  setMap(map: any) { this.map = map }
-  coveredUp(pos: { x: number, y: number, z: number }) { return { x: pos.x + 1, y: pos.y + 1, z: pos.z - 1 } }
-  coveredDown(pos: { x: number, y: number, z: number }) { return { x: pos.x - 1, y: pos.y - 1, z: pos.z + 1 } }
-  _tt(thing: Thing, types: ThingTypeManager): ThingType | null { return thing?.getThingType?.() ?? types?.getItem?.(Number(thing?.getId?.())) }
-  _isItem(thing: Thing) { return !!thing?.isItem?.() }
-  _isCreature(thing: Thing) { return !!thing?.isCreature?.() }
-
-  isLookPossibleAt(x: number, y: number, z: number, types: ThingTypeManager) {
-    const t = this.map?.getTileWorld?.(x, y, z)
-    if (!t) return true
-    const stack = t.m_things ?? []
-    for (const it of stack) {
-      if (!this._isItem(it)) continue
-      const tt = this._tt(it, types)
-      if (tt?.blockProjectile) return false
-    }
-    return true
+  setMap(map: unknown): void {
+    this.map = map
   }
 
-  tileLimitsFloorsView(tile: any, types: ThingTypeManager, isFreeView: boolean) {
-    const stack = tile?.m_things ?? []
-    const firstItem = stack.find((s: any) => this._isItem(s)) || null
-    if (!firstItem) return false
-    const tt = this._tt(firstItem, types)
-    if (!tt || tt.dontHide) return false
-    if (isFreeView) return !!(tt.ground || tt.onBottom)
-    return !!(tt.ground || (tt.onBottom && tt.blockProjectile))
+  /** Project: delegate to Painter for texture cache (ThingType.draw). */
+  texForCanvas(canvas: HTMLCanvasElement | null): unknown {
+    return (g_painter as any).texForCanvas?.(canvas) ?? null
   }
 
-  calcFirstVisibleFloor(types: ThingTypeManager) {
-    const SEA_FLOOR = 7, AWARE_UNDERGROUND_FLOOR_RANGE = 2, UNDERGROUND_FLOOR = 8, MAX_Z = 15
-    const map = this.map
-    const cameraZ = map?.cameraZ ?? SEA_FLOOR
-    const cameraX = map?.cameraX ?? 0
-    const cameraY = map?.cameraY ?? 0
-    if (!map) return Math.max(0, Math.min(MAX_Z, cameraZ))
-    if (this.lockedFirstVisibleFloor >= 0) return Math.max(0, Math.min(MAX_Z, this.lockedFirstVisibleFloor))
-    if (!map.multifloor) return Math.max(0, Math.min(MAX_Z, cameraZ))
-    if (cameraZ > SEA_FLOOR) {
-      return Math.max(0, Math.min(MAX_Z, Math.max(UNDERGROUND_FLOOR, cameraZ - AWARE_UNDERGROUND_FLOOR_RANGE)))
+  /** Project: ThingType uses this for framebuffer path. */
+  shaderNeedFramebuffer(): boolean {
+    return false
+  }
+  drawWithFrameBuffer(_tex?: unknown, _rect?: any, _srcRect?: any, _color?: unknown): void {
+    // Stub: framebuffer path not used in this port
+  }
+
+  /** Project: start frame (clear state and object arrays; clear tile groups). */
+  beginFrame(): void {
+    for (const g of this.tileGroups as THREE.Group[]) {
+      while (g.children.length) {
+        const c = g.children.pop()
+        if (c && (c as THREE.Mesh).isMesh) {
+          const mesh = c as THREE.Mesh
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose())
+            else (mesh.material as THREE.Material).dispose()
+          }
+        }
+      }
     }
+    this.resetState()
+    for (const objs of this.m_objects) objs.length = 0
+    this.m_objectsFlushed.length = 0
+    this.m_states[0] = makePoolState()
+    this.m_lastStateIndex = 0
+    this.m_currentDrawOrder = DrawOrder.FIRST
+  }
+
+  /** Project: end frame (flush, release, execute draw list via Painter). */
+  endFrame(): void {
+    this.flush()
+    this.release()
+    const list = this.m_objectsDraw[0]
+    const target = this.scene != null
+      ? { scene: this.scene, tileGroups: this.tileGroups, w: this.w, h: this.h }
+      : null
+    if (target) g_painter.setDrawTarget(target as any)
+    for (const obj of list) {
+      if (obj.action) obj.action()
+      else if (obj.coords && obj.state) {
+        DrawPool.executeState(obj.state, this)
+        const rects = (obj.coords as any).rects ?? (Array.isArray(obj.coords) ? obj.coords : [obj.coords])
+        g_painter.drawCoords(rects.length ? rects : [obj.coords], obj.state)
+      }
+    }
+    if (target) g_painter.setDrawTarget(null)
+  }
+
+  isDrawingEffectsOnTop(): boolean {
+    return this.m_drawingEffectsOnTop
+  }
+  setDrawingEffectsOnTop(v: boolean): void {
+    this.m_drawingEffectsOnTop = !!v
+  }
+
+  /** OTC addTexturedRect – enqueue rect (dest = tileX,tileY, width, height). */
+  addTexturedRect(rect: DrawRect & { texture?: unknown; color?: Color }): void {
+    if (!rect?.texture) return
+    const method: DrawMethod = {
+      type: DrawMethodType.RECT,
+      dest: { x: rect.tileX ?? 0, y: rect.tileY ?? 0, width: rect.width ?? 1, height: rect.height ?? 1 } as Rect,
+      src: {},
+      intValue: rect.z ?? 0,
+    }
+    this.add(rect.color ?? {}, rect.texture, method, rect as DrawRect)
+  }
+
+  addFilledRect(rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }): void {
+    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'filled', rect: { ...rect }, color: { ...color } })
+    }
+  }
+  addTexturedPos(texture: unknown, x: number, y: number): void {
+    if (texture && this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'textured', texture, x, y })
+    }
+  }
+  addCreatureInfoText(text: string, rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }): void {
+    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
+      this.m_creatureInfoDraws.push({ type: 'text', text, rect: { ...rect }, color: { ...color } })
+    }
+  }
+  beginCreatureInfo(p: { x: number; y: number }): void {
+    this.m_creatureInfoOrigin = { x: p.x, y: p.y }
+    this.m_creatureInfoDraws = []
+  }
+  /** Project: first visible floor (OTC MapView logic). */
+  calcFirstVisibleFloor(types: unknown): number {
+    const SEA_FLOOR = 7
+    const AWARE_UNDERGROUND_FLOOR_RANGE = 2
+    const UNDERGROUND_FLOOR = 8
+    const MAX_Z = 15
+    const map = this.map as any
+    if (!map) return 7
+    const cameraZ = map.cameraZ ?? SEA_FLOOR
+    const cameraX = map.cameraX ?? 0
+    const cameraY = map.cameraY ?? 0
     const rangeLeft = map.range?.left ?? 8
     const rangeTop = map.range?.top ?? 6
     const getTileAt = (wx: number, wy: number, z: number) => {
-      let t = map.getTileWorld(wx, wy, z)
+      let t = map.getTileWorld?.(wx, wy, z)
       if (t) return t
       const sx = wx - cameraX + rangeLeft - z + cameraZ
       const sy = wy - cameraY + rangeTop - z + cameraZ
-      return (sx >= 0 && sy >= 0) ? map.getTile(sx, sy, z) || null : null
+      return (sx >= 0 && sy >= 0) ? map.getTile?.(sx, sy, z) ?? null : null
+    }
+    const isLookPossibleAt = (x: number, y: number, z: number) => {
+      const t = map.getTileWorld?.(x, y, z)
+      if (!t) return true
+      for (const it of (t.m_things ?? [])) {
+        if (!(it as any).isItem?.()) continue
+        const tt = types && (types as any).getItem?.(Number((it as any).getId?.()))
+        if (tt?.blockProjectile) return false
+      }
+      return true
+    }
+    const tileLimitsFloorsView = (tile: any, isFreeView: boolean) => {
+      const stack = tile?.m_things ?? []
+      const firstItem = stack.find((s: any) => (s as any).isItem?.()) || null
+      if (!firstItem) return false
+      const tt = types && (types as any).getItem?.(Number(firstItem.getId?.()))
+      if (!tt || tt.dontHide) return false
+      if (isFreeView) return !!(tt.ground || tt.onBottom)
+      return !!(tt.ground || (tt.onBottom && tt.blockProjectile))
     }
     let firstFloor = 0
     for (let ix = -1; ix <= 1 && firstFloor < cameraZ; ix++) {
       for (let iy = -1; iy <= 1 && firstFloor < cameraZ; iy++) {
         const isOrthogonal = Math.abs(ix) !== Math.abs(iy)
-        const canCheck = (ix === 0 && iy === 0) || (isOrthogonal && this.isLookPossibleAt(cameraX + ix, cameraY + iy, cameraZ, types))
+        const canCheck = (ix === 0 && iy === 0) || (isOrthogonal && isLookPossibleAt(cameraX + ix, cameraY + iy, cameraZ))
         if (!canCheck) continue
         const pos = { x: cameraX + ix, y: cameraY + iy, z: cameraZ }
-        const freeView = this.isLookPossibleAt(pos.x, pos.y, pos.z, types)
+        const freeView = isLookPossibleAt(pos.x, pos.y, pos.z)
         let upperPos = { ...pos }
-        let coveredPos = { ...pos }
+        let coveredPos = { x: pos.x + 1, y: pos.y + 1, z: pos.z - 1 }
         while (coveredPos.z > firstFloor) {
           upperPos = { x: upperPos.x, y: upperPos.y, z: upperPos.z - 1 }
-          coveredPos = this.coveredUp(coveredPos)
+          coveredPos = { x: coveredPos.x + 1, y: coveredPos.y + 1, z: coveredPos.z - 1 }
           if (upperPos.z < firstFloor) break
           const tilePhys = getTileAt(upperPos.x, upperPos.y, upperPos.z)
-          if (tilePhys && this.tileLimitsFloorsView(tilePhys, types, !freeView)) {
+          if (tilePhys && tileLimitsFloorsView(tilePhys, !freeView)) {
             firstFloor = upperPos.z + 1
             break
           }
           const tileGeom = getTileAt(coveredPos.x, coveredPos.y, coveredPos.z)
-          if (tileGeom && this.tileLimitsFloorsView(tileGeom, types, freeView)) {
+          if (tileGeom && tileLimitsFloorsView(tileGeom, freeView)) {
             firstFloor = coveredPos.z + 1
             break
           }
@@ -636,162 +902,18 @@ export class DrawPool {
     return Math.max(0, Math.min(MAX_Z, firstFloor))
   }
 
-  calcLastVisibleFloor(firstFloor: number) {
-    const SEA_FLOOR = 7, AWARE_UNDERGROUND_FLOOR_RANGE = 2, MAX_Z = 15
-    const map = this.map
-    const cameraZ = map?.cameraZ ?? SEA_FLOOR
+  calcLastVisibleFloor(firstFloor: number): number {
+    const SEA_FLOOR = 7
+    const AWARE_UNDERGROUND_FLOOR_RANGE = 2
+    const MAX_Z = 15
+    const map = this.map as any
     if (!map || !map.multifloor) return firstFloor
+    const cameraZ = map.cameraZ ?? SEA_FLOOR
     const z = cameraZ > SEA_FLOOR ? cameraZ + AWARE_UNDERGROUND_FLOOR_RANGE : SEA_FLOOR
     return Math.max(0, Math.min(MAX_Z, z))
   }
 
-  isTileCovered(x: number, y: number, z: number, types: ThingTypeManager) {
-    const map = this.map
-    if (!map) return false
-    const zMin = map.zMin ?? z
-    for (let zz = z - 1; zz >= zMin; zz--) {
-      const base = map.getTile(x, y, z)
-      const wx = base?.meta?.wx, wy = base?.meta?.wy
-      if (!Number.isFinite(wx) || !Number.isFinite(wy)) return false
-      const t = map.getTileWorld(wx, wy, zz)
-      if (!t) continue
-      if (this.tileBlocksFloorsView(t, types)) return true
-    }
-    return false
-  }
-
-  tileBlocksFloorsView(tile: any, types: ThingTypeManager) {
-    const stack = tile?.m_things ?? []
-    const firstItem = stack.find((s: any) => this._isItem(s)) || null
-    if (!firstItem) return false
-    const tt = this._tt(firstItem, types)
-    return !!(tt && !tt.dontHide && (tt.fullGround || tt.ground || (tt.onBottom && tt.blockProjectile)))
-  }
-
-  beginFrame() {
-    for (const g of this.tileGroups) {
-      while (g.children.length) {
-        const c = g.children.pop()
-        if (c instanceof THREE.Mesh) {
-          if (c.material instanceof THREE.Material) c.material.dispose()
-          else if (Array.isArray(c.material)) c.material.forEach(m => m.dispose())
-        }
-      }
-    }
-    this.resetState()
-    for (const objs of this.m_objects) objs.length = 0
-    this.m_objectsFlushed.length = 0
-    this.m_objectsDraw[0].length = 0
-    this.m_states[0] = makePoolState()
-    this.m_lastStateIndex = 0
-    this.m_currentDrawOrder = DrawOrder.FIRST
-    if (this.timer) { clearTimeout(this.timer); this.timer = 0 }
-    this.curQueueIndex = 0
-  }
-
-  endFrame() {
-    this.flush()
-    this.release()
-    const list = this.m_objectsDraw[0]
-    if (this.debugQueue) {
-      const pump = () => {
-        if (this.curQueueIndex >= list.length) return
-        const obj = list[this.curQueueIndex++]
-        if (obj) this._executeDrawObject(obj)
-        this.timer = setTimeout(pump, this.debugDelayMs)
-      }
-      this.timer = setTimeout(pump, this.debugDelayMs)
-    } else {
-      for (const obj of list) this._executeDrawObject(obj)
-    }
-  }
-
-  _executeDrawObject(obj: DrawObject) {
-    if (obj.action) {
-      obj.action()
-      return
-    }
-    const rects = obj.coords == null ? [] : Array.isArray(obj.coords) ? obj.coords : [obj.coords]
-    const state = obj.state ?? null
-    for (const rect of rects) {
-      if (rect && (rect.texture || rect.tileX != null)) this._draw(rect, state)
-    }
-  }
-
-  tileOrder(x: number, y: number) { return ((x + y) * this.h + y) * 1000 }
-
-  texForSprite(spriteId: number, sprites: any) {
-    if (!spriteId || !sprites) return null
-    if (this.texCache.has(spriteId)) return this.texCache.get(spriteId)
-    const canvas = sprites.getCanvas(spriteId)
-    if (!canvas) { this.texCache.set(spriteId, null); return null }
-    const tex = new THREE.CanvasTexture(canvas)
-    tex.magFilter = tex.minFilter = THREE.NearestFilter
-    tex.colorSpace = THREE.SRGBColorSpace
-    this.texCache.set(spriteId, tex)
-    return tex
-  }
-  texForCanvas(canvas: HTMLCanvasElement) {
-    if (!canvas) return null
-    if (this.canvasTexCache.has(canvas)) return this.canvasTexCache.get(canvas)
-    const tex = new THREE.CanvasTexture(canvas)
-    tex.magFilter = tex.minFilter = THREE.NearestFilter
-    tex.colorSpace = THREE.SRGBColorSpace
-    this.canvasTexCache.set(canvas, tex)
-    return tex
-  }
-
-  getSpriteIndex(tt: any, bw: number, bh: number, layer: number, xPat: number, yPat: number, zPat: number, phase: number) {
-    if (typeof tt?.getSpriteIndex === 'function') return tt.getSpriteIndex(0, 0, layer, xPat, yPat, zPat, phase)
-    const layers = tt.layers ?? tt.m_layers ?? 1
-    const px = tt.patternX ?? tt.m_numPatternX ?? 1
-    const py = tt.patternY ?? tt.m_numPatternY ?? 1
-    const pz = tt.patternZ ?? tt.m_numPatternZ ?? 1
-    const ph = Math.max(1, tt.phases ?? tt.m_animationPhases ?? 1)
-    if (layer >= layers || xPat >= px || yPat >= py || zPat >= pz || phase >= ph) return -1
-    return ((((((phase % ph) * pz + zPat) * py + yPat) * px + xPat) * layers + layer) * bh + 0) * bw + 0
-  }
-
-  /** OTC: addTexturedRect – enfileira rect no m_objects[m_currentDrawOrder] (equivalente a add com method = rect). */
-  addTexturedRect(rect: any) {
-    if (!rect?.texture) return
-    const method = makeDrawMethod({
-      type: DrawMethodType.RECT,
-      dest: { x: rect.tileX ?? 0, y: rect.tileY ?? 0, width: rect.width ?? 1, height: rect.height ?? 1 },
-      intValue: rect.z ?? 0,
-    })
-    this.add(rect.color ?? {}, rect.texture, method, rect)
-  }
-
-  /** OTC: addFilledRect(rect, color) – creature info; screen-space. Stub: records for creature-info composite. */
-  addFilledRect(rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }) {
-    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
-      this.m_creatureInfoDraws.push({ type: 'filled', rect: { ...rect }, color: { ...color } })
-    }
-  }
-
-  /** OTC: addTexturedPos(texture, x, y) – creature info; screen-space. Stub: records for creature-info composite. */
-  addTexturedPos(texture: THREE.CanvasTexture | HTMLCanvasElement | null, x: number, y: number) {
-    if (texture && this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
-      this.m_creatureInfoDraws.push({ type: 'textured', texture, x, y })
-    }
-  }
-
-  /** Creature info: draw text (m_name.draw). Records for composite. */
-  addCreatureInfoText(text: string, rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }) {
-    if (this.m_creatureInfoOrigin && this.m_creatureInfoDraws) {
-      this.m_creatureInfoDraws.push({ type: 'text', text, rect: { ...rect }, color: { ...color } })
-    }
-  }
-
-  /** Start recording creature-info draws; origin p in screen space. */
-  beginCreatureInfo(p: { x: number; y: number }, _mapRect?: any) {
-    this.m_creatureInfoOrigin = { x: p.x, y: p.y }
-    this.m_creatureInfoDraws = []
-  }
-
-  /** Flush recorded creature-info draws to one canvas and addTexturedRect; then stop recording. */
-  endCreatureInfo() {
+  endCreatureInfo(): void {
     const origin = this.m_creatureInfoOrigin
     const draws = this.m_creatureInfoDraws
     this.m_creatureInfoOrigin = null
@@ -801,22 +923,20 @@ export class DrawPool {
     let minY = origin.y
     let maxX = origin.x
     let maxY = origin.y
-    const TEXT_OUTLINE_PADDING = 3 // OTC: name outline (stroke) extends outside text rect
+    const PAD = 3
     for (const d of draws) {
       if (d.type === 'filled' || d.type === 'text') {
         const r = d.type === 'filled' ? d.rect : (d as any).rect
-        const pad = d.type === 'text' ? TEXT_OUTLINE_PADDING : 0
+        const pad = d.type === 'text' ? PAD : 0
         minX = Math.min(minX, r.x - pad)
         minY = Math.min(minY, r.y - pad)
         maxX = Math.max(maxX, r.x + r.width + pad)
         maxY = Math.max(maxY, r.y + r.height + pad)
       } else {
-        const tw = 12
-        const th = 12
         minX = Math.min(minX, d.x)
         minY = Math.min(minY, d.y)
-        maxX = Math.max(maxX, d.x + tw)
-        maxY = Math.max(maxY, d.y + th)
+        maxX = Math.max(maxX, d.x + 12)
+        maxY = Math.max(maxY, d.y + 12)
       }
     }
     const w = Math.ceil(maxX - minX)
@@ -833,8 +953,7 @@ export class DrawPool {
         ctx.fillStyle = `rgb(${d.color.r},${d.color.g},${d.color.b})`
         ctx.fillRect(d.rect.x - minX, d.rect.y - minY, d.rect.width, d.rect.height)
       } else if (d.type === 'textured') {
-        const tex = d.texture
-        const img = tex && (tex as HTMLCanvasElement).getContext ? tex as HTMLCanvasElement : null
+        const img = d.texture && (d.texture as HTMLCanvasElement).getContext ? d.texture as HTMLCanvasElement : null
         if (img) ctx.drawImage(img, d.x - minX, d.y - minY, 12, 12)
       } else if (d.type === 'text') {
         ctx.font = '10px sans-serif'
@@ -842,104 +961,25 @@ export class DrawPool {
         ctx.textBaseline = 'alphabetic'
         const cx = d.rect.x - minX + d.rect.width / 2
         const cy = d.rect.y - minY + d.rect.height - 2
-        // OTC: name has outline (stroke then fill); stroke drawn first so fill sits on top
         ctx.strokeStyle = '#000'
         ctx.lineWidth = 2.5
-        ctx.lineJoin = 'round'
-        ctx.miterLimit = 2
         ctx.strokeText(d.text, cx, cy)
         ctx.fillStyle = `rgb(${d.color.r},${d.color.g},${d.color.b})`
         ctx.fillText(d.text, cx, cy)
       }
     }
-    const tex = this.texForCanvas(canvas)
+    const tex = (g_painter as any).texForCanvas?.(canvas)
     if (!tex) return
     const TILE = 32
-    const tileX = minX / TILE
-    const tileY = minY / TILE
-    const dx = (minX % TILE) / TILE
-    const dy = (minY % TILE) / TILE
     this.addTexturedRect({
-      tileX,
-      tileY,
+      tileX: minX / TILE,
+      tileY: minY / TILE,
       texture: tex,
       width: w / TILE,
       height: h / TILE,
       z: 0,
-      dx,
-      dy,
-    })
-  }
-
-  enqueueDraw(_pass: any, job: any) { this.addTexturedRect(job) }
-  flushNow() { this.flush(); this.release(); for (const obj of this.m_objectsDraw[0]) this._executeDrawObject(obj) }
-
-  _draw(rect: any, state?: PoolState | null) {
-    const tileX = rect.tileX ?? 0
-    const tileY = rect.tileY ?? 0
-    const texture = rect.texture
-    const width = rect.width ?? 1
-    const height = rect.height ?? 1
-    const z = rect.z ?? 0
-    const dx = rect.dx ?? 0
-    const dy = rect.dy ?? 0
-    
-    const tx = Math.max(0, Math.min(this.w - 1, Math.floor(tileX)))
-    const ty = Math.max(0, Math.min(this.h - 1, Math.floor(tileY)))
-    
-    if (!texture || !this.tileGroups.length) return
-    const compositionMode = (rect as any)?.__compositionMode ?? state?.compositionMode
-    const useMultiply = Number(compositionMode) === 1
-    const multiplyColorSrc = useMultiply ? ((rect as any)?.__multiplyColor ?? rect.color ?? state?.color) : null
-    const multiplyColor = multiplyColorSrc && typeof multiplyColorSrc === 'object' && (multiplyColorSrc.r != null || multiplyColorSrc.g != null || multiplyColorSrc.b != null)
-      ? multiplyColorSrc as { r?: number; g?: number; b?: number }
-      : null
-    const mat = new THREE.MeshBasicMaterial({
-      map: texture,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      blending: useMultiply ? THREE.CustomBlending : THREE.NormalBlending,
-      ...(useMultiply ? {
-        blendSrc: THREE.DstColorFactor,
-        blendDst: THREE.OneMinusSrcAlphaFactor,
-        blendSrcAlpha: THREE.OneFactor,
-        blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
-      } : {}),
-      color: useMultiply && multiplyColor
-        ? new THREE.Color((multiplyColor.r ?? 255) / 255, (multiplyColor.g ?? 255) / 255, (multiplyColor.b ?? 255) / 255)
-        : new THREE.Color(1, 1, 1),
-    })
-    const m = new THREE.Mesh(this.plane, mat)
-    m.visible = true
-    m.scale.set(width, height, 1)
-    
-    const ox = (width - 1) / 2
-    const oy = (height - 1) / 2
-    
-    const threeZ = -z
-    
-    // dx/dy já vêm em unidades de tile do ThingType.draw
-    // Tibia: X aumenta direita, Y aumenta baixo
-    // Three.js: X aumenta direita, Y aumenta cima
-    // dx já tem sinal correto (negativo para mover esquerda)
-    // dy precisa ser invertido porque:
-    //   - dy positivo no Tibia = mover para cima (Y decresce)
-    //   - No Three.js, mover para cima = Y aumenta (positivo)
-    // Portanto: offsetY = +dy (mesmo sinal, porque dy já representa "mover para cima")
-    const offsetX = dx
-    const offsetY = dy
-    
-    // A posição final do mesh dentro do tileGroup
-    // (tileX - tx) e (tileY - ty) são os offsets fracionários dentro do tileGroup
-    // O -( tileY - ty) inverte a posição do tile no eixo Y
-    m.position.set(ox + offsetX + (tileX - tx), oy + offsetY - (tileY - ty), threeZ)
-    
-    m.renderOrder = 15 - z
-    
-    const group = this.tileGroups[ty * this.w + tx]
-    if (group) {
-      group.add(m)
-    }
+      dx: (minX % TILE) / TILE,
+      dy: (minY % TILE) / TILE,
+    } as any)
   }
 }

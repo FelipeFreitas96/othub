@@ -12,7 +12,8 @@
 
 import * as THREE from 'three'
 import { GameMap } from '../render/GameMap'
-import { DrawPool, DrawOrder } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { DrawPool, DrawPoolType } from '../graphics/DrawPool'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
 import { g_player } from './LocalPlayer'
 import { g_map } from './ClientMap'
@@ -117,9 +118,25 @@ export class MapView {
 
     const debugQueue = typeof window !== 'undefined' && !!(window as any).__otDebugQueue
     const debugDelayMs = typeof window !== 'undefined' ? ((window as any).__otDebugDelayMs ?? 25) : 25
-    this.pipeline = new DrawPool({ scene: this.scene, w, h, thingsRef, debugQueue, debugDelayMs })
+    this.pipeline = DrawPool.create(DrawPoolType.MAP)
+    this.pipeline.scene = this.scene
+    this.pipeline.w = w
+    this.pipeline.h = h
+    this.pipeline.thingsRef = thingsRef
+    this.pipeline.tileGroups = []
+    const centerX = w / 2
+    const centerY = h / 2
+    for (let ty = 0; ty < h; ty++) {
+      for (let tx = 0; tx < w; tx++) {
+        const g = new THREE.Group()
+        g.position.set(tx - centerX, centerY - ty, 0)
+        this.scene.add(g)
+        this.pipeline.tileGroups.push(g)
+      }
+    }
     this.map = new GameMap()
     this.pipeline.setMap(this.map)
+    g_drawPool.setPool(DrawPoolType.MAP, this.pipeline)
 
     this.resize(host)
   }
@@ -355,11 +372,12 @@ export class MapView {
       }
     }
     this.camera.position.set(camX, camY, 10)
+    g_drawPool.select(DrawPoolType.MAP)
     this.pipeline.beginFrame()
     const lightView = this.m_lightView.isEnabled() ? this.m_lightView : null
     if (lightView) this.m_lightView.clear()
     for (const entry of this.m_cachedVisibleTiles) {
-      entry.tile.draw(this.pipeline, DEFAULT_DRAW_FLAGS, entry.x, entry.y, lightView)
+      entry.tile.draw(DEFAULT_DRAW_FLAGS, entry.x, entry.y, lightView)
     }
     this.pipeline.endFrame()
 

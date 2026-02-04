@@ -4,10 +4,12 @@
  */
 
 import { Thing } from './Thing'
-import { DrawPool, DrawPoolType, DrawOrder } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { DrawPoolType } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
 import { ThingCategory } from '../things/thingType'
 import { g_map } from './ClientMap'
+import { g_client } from './Client'
 import { g_dispatcher } from '../framework/EventDispatcher'
 import { getThings } from '../protocol/things'
 import { Position } from './Position'
@@ -75,19 +77,13 @@ export class Effect extends Thing {
   }
 
   /** OTC: void Effect::draw(const Point& dest, bool drawThings, LightView*) */
-  override draw(
-    pipeline: DrawPool,
-    tileX: number,
-    tileY: number,
-    drawElevationPx: number,
-    zOff: number,
-    tileZ: number
-  ): void {
+  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number): void {
+    if (!g_drawPool.isValid()) return
     if (!this.canDraw() || this.isHided()) return
     if (this.m_animationTimer.ticksElapsed() < this.m_timeToStartDrawing) return
 
     let animationPhase = 0
-    const tt = this.getThingType(pipeline)
+    const tt = this.getThingType()
     if (tt && (tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 0) > 1) {
       const animator = (tt as any).getIdleAnimator?.()
       if (animator?.getPhaseAt) {
@@ -107,6 +103,7 @@ export class Effect extends Thing {
     const center = g_map.getCentralPosition()
     const pos = this.m_position
     if (!pos) return
+
     const offsetX = pos.x - center.x
     const offsetY = pos.y - center.y
     const numPatternX = tt?.patternX ?? tt?.m_numPatternX ?? 1
@@ -117,14 +114,15 @@ export class Effect extends Thing {
     let yPattern = ((offsetY % numPatternY) + numPatternY) % numPatternY
 
     if (!tt || tt.m_null || (tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 0) === 0) return
-
-    if (pipeline.getCurrentType?.() === DrawPoolType.MAP) {
-      const effectAlpha = (pipeline as any).getEffectAlpha?.() ?? 1
-      if (effectAlpha < 1) pipeline.setOpacity?.(effectAlpha, true)
+    if (g_drawPool.getCurrentType?.() === DrawPoolType.MAP) {
+      const effectAlpha = g_client.getEffectAlpha()
+      if (effectAlpha < 1) {
+        g_drawPool.setOpacity(effectAlpha, true)
+      }
     }
-    // OTC: if (drawThings && hasShader()) g_drawPool.setShaderProgram(g_shaders.getShaderById(m_shaderId), true)
-    if ((this as any).m_shaderId != null) {
-      (pipeline as any).setShaderProgram?.((globalThis as any).g_shaders?.getShaderById?.(this.m_shaderId), true)
+    
+    if (this.m_shaderId != null) {
+      g_drawPool.setShaderProgram(this.g_shaders.getShaderById(this.m_shaderId), true)
     }
 
     const TILE_PIXELS = 32
@@ -135,7 +133,8 @@ export class Effect extends Thing {
       zOff,
       tileZ,
     }
-    tt.draw(pipeline, dest, 0, xPattern, yPattern, 0, animationPhase, { r: 255, g: 255, b: 255 }, true, null)
+
+    tt.draw(dest, 0, xPattern, yPattern, 0, animationPhase, { r: 255, g: 255, b: 255 }, true, null)
   }
 
   /** OTC: void Effect::onAppear() */

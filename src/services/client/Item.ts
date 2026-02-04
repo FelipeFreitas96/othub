@@ -5,7 +5,6 @@
  */
 
 import { Thing } from './Thing'
-import { DrawPool } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import { g_map } from './ClientMap'
@@ -121,13 +120,13 @@ export class Item extends Thing {
 
   /**
    * OTC: Item::draw(dest, …) → getThingType()->draw(dest, 0, m_numPatternX, m_numPatternY, m_numPatternZ, …).
-   * Padrões vêm de updatePatterns() (chamado em setPosition / onPositionChange).
+   * Uses g_drawPool (DrawPoolManager); no pipeline param, like OTClient.
    */
-  override draw(pipeline: DrawPool, tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number) {
+  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number) {
     const tt = this.getThingType()
     if (!tt) return
     const dest = { tileX, tileY, drawElevationPx, zOff, tileZ }
     const animationPhase = this.calculateAnimationPhase(true)
-    tt.draw(pipeline, dest, 0, this.m_numPatternX, this.m_numPatternY, this.m_numPatternZ, animationPhase, null, true, null)
+    tt.draw(dest, 0, this.m_numPatternX, this.m_numPatternY, this.m_numPatternZ, animationPhase, null, true, null)
   }
 }

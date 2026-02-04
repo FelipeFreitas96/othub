@@ -14,7 +14,8 @@ import { Outfit } from './types'
 import type { MapPosInfo, Point, Rect } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { Thing } from './Thing'
-import { DrawPool, DrawOrder } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { DrawOrder } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
 import { g_game } from './Game'
 import { DrawFlags } from '../graphics/drawFlags'
@@ -398,8 +399,8 @@ export class Creature extends Thing {
   static readonly COLOR_WHITE = { r: 255, g: 255, b: 255 }
 
   /** OTC: getCurrentAnimationPhase(forMount = false) – same as calculateAnimationPhase. */
-  getCurrentAnimationPhase(pipeline?: DrawPool, forMount = false): number {
-    return this.calculateAnimationPhase(pipeline ?? (null as any), true)
+  getCurrentAnimationPhase(forMount = false): number {
+    return this.calculateAnimationPhase(true)
   }
 
   /** OTC: m_outfit.getHeadColor() – Color from outfit head (8bit → rgb stub). */
@@ -901,8 +902,8 @@ export class Creature extends Thing {
   }
 
   /** OTC: equivalente ao creature type (outfit). Retorna o ThingType do lookType. */
-  getThingType(pipeline?: DrawPool): ThingType | null {
-    const types = pipeline?.thingsRef?.current?.types ?? getThings()?.types
+  getThingType(): ThingType | null {
+    const types = g_drawPool.thingsRef?.current?.types ?? getThings()?.types
     const lookType = this.m_outfit?.lookType ?? 0
     return lookType && types ? types.getCreature(lookType) : null
   }
@@ -925,10 +926,10 @@ export class Creature extends Thing {
   }
 
   /** OTC: getMountThingType() – ThingType for mount. */
-  getMountThingType(pipeline?: DrawPool): ThingType | null {
+  getMountThingType(): ThingType | null {
     const mountId = (this.m_outfit as any)?.lookTypeEx
     if (!mountId) return null
-    const types = pipeline?.thingsRef?.current?.types ?? getThings()?.types
+    const types = g_drawPool.thingsRef?.current?.types ?? getThings()?.types
     return types?.getCreature?.(mountId) ?? null
   }
 
@@ -940,10 +941,11 @@ export class Creature extends Thing {
   /**
    * OTC: Creature::draw(dest, drawThings, lightView) – calls internalDraw(_dest). drawFlags passed for marked/highlight.
    */
-  override draw(pipeline: DrawPool, tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false, drawFlags = 0) {
-    const ct = this.getThingType(pipeline)
+  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false, drawFlags = 0) {
+    if (!g_drawPool.isValid()) return
+    const ct = this.getThingType()
     if (!ct) return
-    const things = pipeline.thingsRef?.current
+    const things = g_drawPool.thingsRef?.current
     if (!things?.types) return
     if (this.m_walking && !isWalkDraw) return
 
@@ -958,7 +960,7 @@ export class Creature extends Thing {
       frameGroupIndex: ct.getFrameGroupForDraw(this.m_walking),
     }
     const color = Creature.COLOR_WHITE
-    this.internalDraw(pipeline, dest, color)
+    this.internalDraw(dest, color)
     this.m_footStepDrawn = true
   }
 
@@ -966,11 +968,11 @@ export class Creature extends Thing {
    * OTC: void Creature::internalDraw(Point dest, const Color& color) – 1:1 structure.
    * Jump/bounce → replaceColorShader → isHided → paperdolls → outfit.isCreature (mount + drawCreature) or item/effect → resetShader / drawAttachedEffect.
    */
-  internalDraw(pipeline: DrawPool, dest: any, color: { r: number; g: number; b: number }) {
+  internalDraw(dest: any, color: { r: number; g: number; b: number }) {
     const originalDest = { ...dest, pixelOffsetX: dest.pixelOffsetX ?? 0, pixelOffsetY: dest.pixelOffsetY ?? 0 }
     let d = { ...dest, pixelOffsetX: dest.pixelOffsetX ?? 0, pixelOffsetY: dest.pixelOffsetY ?? 0 }
 
-    const scaleFactor = pipeline.getScaleFactor?.() ?? 1
+    const scaleFactor = g_drawPool.getScaleFactor()
     if (this.m_jumpOffset && (this.m_jumpOffset.x !== 0 || this.m_jumpOffset.y !== 0)) {
       d.pixelOffsetX -= Math.round(this.m_jumpOffset.x * scaleFactor)
       d.pixelOffsetY -= Math.round(this.m_jumpOffset.y * scaleFactor)
@@ -985,16 +987,16 @@ export class Creature extends Thing {
     const white = Creature.COLOR_WHITE
     const replaceColorShader = color.r !== white.r || color.g !== white.g || color.b !== white.b
     if (replaceColorShader) {
-      pipeline.setShaderProgram(null)
+      g_drawPool.setShaderProgram(null)
     } else {
       this.drawAttachedEffect(originalDest, d, null, false)
     }
 
     if (!this.isHided()) {
-      const animationPhase = this.getCurrentAnimationPhase(pipeline, false)
-      const ct = this.getThingType(pipeline)
+      const animationPhase = this.getCurrentAnimationPhase(false)
+      const ct = this.getThingType()
       if (!ct) return
-      const things = pipeline.thingsRef?.current
+      const things = g_drawPool.thingsRef?.current
       if (!things?.types) return
       const dir = this.m_walking ? this.m_direction : (this.m_direction ?? 0)
       const px = ct.patternX ?? ct.m_numPatternX ?? 1
@@ -1004,16 +1006,16 @@ export class Creature extends Thing {
 
       if (this.isOutfitCreature()) {
         if (this.hasMount()) {
-          const mountType = this.getMountThingType(pipeline)
+          const mountType = this.getMountThingType()
           if (mountType) {
             const mountDisp = mountType.getDisplacement?.() ?? mountType.m_displacement ?? { x: 0, y: 0 }
             d.pixelOffsetX -= (mountDisp.x ?? 0) * scaleFactor
             d.pixelOffsetY -= (mountDisp.y ?? 0) * scaleFactor
             if (!replaceColorShader && this.hasMountShader()) {
-              pipeline.setShaderProgram(null)
+              g_drawPool.setShaderProgram(null)
             }
-            const mountPhase = this.getCurrentAnimationPhase(pipeline, true)
-            mountType.draw(pipeline, d, 0, xPattern, 0, 0, mountPhase, color, true, null)
+            const mountPhase = this.getCurrentAnimationPhase(true)
+            mountType.draw(d, 0, xPattern, 0, 0, mountPhase, color, true, null)
             const myDisp = this.getDisplacement()
             d.pixelOffsetX += (myDisp.x ?? 0) * scaleFactor
             d.pixelOffsetY += (myDisp.y ?? 0) * scaleFactor
@@ -1025,30 +1027,30 @@ export class Creature extends Thing {
           for (let yPattern = 0; yPattern < numY; yPattern++) {
             if (yPattern > 0 && !((this.m_outfit?.addons ?? 0) & (1 << (yPattern - 1)))) continue
             if (!replaceColorShader && this.hasShader()) {
-              pipeline.setShaderProgram(null)
+              g_drawPool.setShaderProgram(null)
             }
-            ct.draw(pipeline, destPt, 0, xPattern, yPattern, zPattern, animationPhase, color, true, null)
+            ct.draw(destPt, 0, xPattern, yPattern, zPattern, animationPhase, color, true, null)
             if (this.m_drawOutfitColor && !replaceColorShader && this.getLayers() > 1) {
-              pipeline.setCompositionMode(1)
-              ct.draw(pipeline, destPt, SpriteMaskYellow, xPattern, yPattern, zPattern, animationPhase, this.getOutfitHeadColor(), true, null)
-              ct.draw(pipeline, destPt, SpriteMaskRed, xPattern, yPattern, zPattern, animationPhase, this.getOutfitBodyColor(), true, null)
-              ct.draw(pipeline, destPt, SpriteMaskGreen, xPattern, yPattern, zPattern, animationPhase, this.getOutfitLegsColor(), true, null)
-              ct.draw(pipeline, destPt, SpriteMaskBlue, xPattern, yPattern, zPattern, animationPhase, this.getOutfitFeetColor(), true, null)
-              pipeline.resetCompositionMode()
+              g_drawPool.setCompositionMode(1)
+              ct.draw(destPt, SpriteMaskYellow, xPattern, yPattern, zPattern, animationPhase, this.getOutfitHeadColor(), true, null)
+              ct.draw(destPt, SpriteMaskRed, xPattern, yPattern, zPattern, animationPhase, this.getOutfitBodyColor(), true, null)
+              ct.draw(destPt, SpriteMaskGreen, xPattern, yPattern, zPattern, animationPhase, this.getOutfitLegsColor(), true, null)
+              ct.draw(destPt, SpriteMaskBlue, xPattern, yPattern, zPattern, animationPhase, this.getOutfitFeetColor(), true, null)
+              g_drawPool.resetCompositionMode()
             }
           }
         }
 
         if (useFramebuffer) {
-          pipeline.bindFrameBuffer(null)
+          g_drawPool.bindFrameBuffer(null as any)
           drawCreature(d)
-          pipeline.releaseFrameBuffer(null)
-          pipeline.resetShaderProgram()
+          g_drawPool.releaseFrameBuffer()
+          g_drawPool.resetShaderProgram()
         } else {
           drawCreature(d)
         }
       } else {
-        const thingType = this.getThingType(pipeline)
+        const thingType = this.getThingType()
         if (thingType) {
           let animationPhases = thingType.getAnimationPhases?.() ?? thingType.m_animationPhases ?? 1
           let animateTicks = 100
@@ -1062,16 +1064,16 @@ export class Creature extends Thing {
             phase = Math.floor((ms / animateTicks) % animationPhases)
           }
           if (this.isOutfitEffect()) phase = Math.min(phase + 1, animationPhases)
-          if (!replaceColorShader && this.hasShader()) pipeline.setShaderProgram(null)
+          if (!replaceColorShader && this.hasShader()) g_drawPool.setShaderProgram(null)
           const disp = this.getDisplacement()
           const itemDest = { ...d, pixelOffsetX: d.pixelOffsetX - (disp.x ?? 0) * scaleFactor, pixelOffsetY: d.pixelOffsetY - (disp.y ?? 0) * scaleFactor }
-          thingType.draw(pipeline, itemDest, 0, 0, 0, 0, phase, color, true, null)
+          thingType.draw(itemDest, 0, 0, 0, 0, phase, color, true, null)
         }
       }
     }
 
     if (replaceColorShader) {
-      pipeline.resetShaderProgram()
+      g_drawPool.resetShaderProgram()
     } else {
       this.drawAttachedEffect(originalDest, d, null, true)
       this.drawAttachedParticlesEffect(originalDest)
@@ -1082,7 +1084,9 @@ export class Creature extends Thing {
    * OTC: Creature::drawInformation(const MapPosInfo& mapRect, const Point& dest, const int drawFlags)
    * 1:1 port – same order, same logic; stubs where needed.
    */
-  drawInformation(mapRect: MapPosInfo, dest: Point, drawFlags: number, pipeline: DrawPool) {
+  drawInformation(mapRect: MapPosInfo, dest: Point, drawFlags: number) {
+    const pool = g_drawPool
+    if (!pool.isValid()) return
     const DEFAULT_COLOR = { r: 96, g: 96, b: 96 }
     const NPC_COLOR = { r: 0x66, g: 0xcc, b: 0xff }
 
@@ -1150,26 +1154,26 @@ export class Creature extends Thing {
     let healthRect = { x: backgroundRect.x + 1, y: backgroundRect.y + 1, width: (this.m_healthPercent ?? 100) / 100 * 29, height: backgroundRect.height - 2 }
     let barsRect = { ...backgroundRect }
 
-    pipeline.beginCreatureInfo(p, mapRect)
+    g_drawPool.beginCreatureInfo(p, mapRect)
 
     if ((drawFlags & DrawFlags.DrawBars) && (getClientVersion() >= 1100 ? !this.isNpc() : true)) {
-      pipeline.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
-      pipeline.addFilledRect(healthRect, fillColor)
+      g_drawPool.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
+      g_drawPool.addFilledRect(healthRect, fillColor)
 
       if ((drawFlags & DrawFlags.DrawManaBar) && this.isLocalPlayer()) {
         const player = this.getLocalPlayer()
         if (player?.isMage?.() && (player.getMaxManaShield?.() ?? 0) > 0) {
           barsRect = { ...barsRect, y: barsRect.y + barsRect.height }
-          pipeline.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
+          g_drawPool.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
           const maxManaShield = player.getMaxManaShield?.() ?? 1
           const manaShieldRect = { x: barsRect.x + 1, y: barsRect.y + 1, width: (maxManaShield ? (player.getManaShield?.() ?? 0) / maxManaShield : 1) * 29, height: barsRect.height - 2 }
-          pipeline.addFilledRect(manaShieldRect, { r: 0xFF, g: 0x69, b: 0xB4 })
+          g_drawPool.addFilledRect(manaShieldRect, { r: 0xFF, g: 0x69, b: 0xB4 })
         }
         barsRect = { ...barsRect, y: barsRect.y + barsRect.height }
-        pipeline.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
+        g_drawPool.addFilledRect(barsRect, { r: 0, g: 0, b: 0 })
         const maxMana = player?.getMaxMana?.() ?? 1
         const manaRect = { x: barsRect.x + 1, y: barsRect.y + 1, width: (maxMana ? (player?.getMana?.() ?? 0) / maxMana : 1) * 29, height: barsRect.height - 2 }
-        pipeline.addFilledRect(manaRect, { r: 0, g: 0, b: 255 })
+        g_drawPool.addFilledRect(manaRect, { r: 0, g: 0, b: 255 })
       }
       backgroundRect = { ...barsRect }
     }
@@ -1178,27 +1182,30 @@ export class Creature extends Thing {
       const player = this.getLocalPlayer()
       if (player?.isMonk?.()) {
         backgroundRect = { ...backgroundRect, y: backgroundRect.y + backgroundRect.height }
-        pipeline.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
+        g_drawPool.addFilledRect(backgroundRect, { r: 0, g: 0, b: 0 })
+
         for (let i = 0; i < 5; i++) {
           const subBarRect = { x: backgroundRect.x + 1 + i * 6, y: backgroundRect.y + 1, width: 5, height: backgroundRect.height - 2 }
           const subBarColor = i < (player.getHarmony?.() ?? 0) ? { r: 0xFF, g: 0x98, b: 0x54 } : { r: 64, g: 64, b: 64 }
-          pipeline.addFilledRect(subBarRect, subBarColor)
+          g_drawPool.addFilledRect(subBarRect, subBarColor)
         }
+
         backgroundRect = { ...backgroundRect, y: backgroundRect.y + backgroundRect.height }
         const sereneBackgroundRect = { x: backgroundRect.x + (backgroundRect.width / 2) - (11 / 2) - 1, y: backgroundRect.y, width: 11 + 2, height: backgroundRect.height - 2 + 2 }
-        pipeline.addFilledRect(sereneBackgroundRect, { r: 0, g: 0, b: 0 })
+        g_drawPool.addFilledRect(sereneBackgroundRect, { r: 0, g: 0, b: 0 })
+        
         const sereneColor = player.isSerene?.() ? { r: 0xD4, g: 0x37, b: 0xFF } : { r: 64, g: 64, b: 64 }
         const sereneSubBarRect = { x: sereneBackgroundRect.x + 1, y: sereneBackgroundRect.y + 1, width: 11, height: backgroundRect.height - 2 }
-        pipeline.addFilledRect(sereneSubBarRect, sereneColor)
+        g_drawPool.addFilledRect(sereneSubBarRect, sereneColor)
       }
     }
 
-    pipeline.setDrawOrder(DrawOrder.SECOND)
+    g_drawPool.setDrawOrder(DrawOrder.SECOND)
 
     if (drawFlags & DrawFlags.DrawNames) {
-      (pipeline as any).setShaderProgram?.(this.m_nameShader ? (globalThis as any).g_shaders?.getShader?.(this.m_nameShader) : null)
-      this._drawName(textRect, fillColor, pipeline)
-      ;(pipeline as any).resetShaderProgram?.()
+    g_drawPool.setShaderProgram?.(this.m_nameShader ? (globalThis as any).g_shaders?.getShader?.(this.m_nameShader) : null)
+      this._drawName(textRect, fillColor)
+      g_drawPool.resetShaderProgram?.()
       if (this.m_text) {
         const extraTextSize = this.m_text.getTextSize()
         const extraTextRect = { x: p.x - extraTextSize.width / 2, y: p.y + 15, width: extraTextSize.width, height: extraTextSize.height }
@@ -1207,23 +1214,23 @@ export class Creature extends Thing {
     }
 
     if (this.m_skull !== SkullNone && this.m_skullTexture)
-      pipeline.addTexturedPos(this.m_skullTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
+      g_drawPool.addTexturedPos(this.m_skullTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
     if (this.m_shield !== ShieldNone && this.m_shieldTexture && this.m_showShieldTexture)
-      pipeline.addTexturedPos(this.m_shieldTexture as any, backgroundRect.x + 15.5, backgroundRect.y + 5)
+      g_drawPool.addTexturedPos(this.m_shieldTexture as any, backgroundRect.x + 15.5, backgroundRect.y + 5)
     if ((this as any).m_emblem !== 0 && this.m_emblemTexture)
-      pipeline.addTexturedPos(this.m_emblemTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 16)
+      g_drawPool.addTexturedPos(this.m_emblemTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 16)
     if ((this as any).m_type !== 0 && this.m_typeTexture)
-      pipeline.addTexturedPos(this.m_typeTexture as any, backgroundRect.x + 15.5 + 12 + 12, backgroundRect.y + 16)
+      g_drawPool.addTexturedPos(this.m_typeTexture as any, backgroundRect.x + 15.5 + 12 + 12, backgroundRect.y + 16)
     if ((this as any).m_icon !== 0 && this.m_iconTexture)
-      pipeline.addTexturedPos(this.m_iconTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
+      g_drawPool.addTexturedPos(this.m_iconTexture as any, backgroundRect.x + 15.5 + 12, backgroundRect.y + 5)
     if ((g_game as any).drawTyping?.() && this.getTyping() && this.m_typingIconTexture)
-      pipeline.addTexturedPos(this.m_typingIconTexture as any, p.x + (nameSize.width / 2) + 2, textRect.y - 4)
+      g_drawPool.addTexturedPos(this.m_typingIconTexture as any, p.x + (nameSize.width / 2) + 2, textRect.y - 4)
     if (getClientVersion() >= 1281 && this.m_icons?.atlasGroups?.length) {
       for (let iconOffset = 0; iconOffset < this.m_icons!.atlasGroups.length; iconOffset++) {
         const iconTex = this.m_icons!.atlasGroups[iconOffset]
         if (!iconTex.texture) continue
         const destRect = { x: backgroundRect.x + 15.5 + 12, y: backgroundRect.y + 5 + iconOffset * 14, width: iconTex.clip?.width ?? 12, height: iconTex.clip?.height ?? 12 }
-        ;(pipeline as any).addTexturedRect?.(destRect, iconTex.texture, iconTex.clip)
+        g_drawPool.addTexturedRect?.(destRect, iconTex.texture, iconTex.clip)
         if (iconTex.count > 0) {
           this.m_icons!.numberText.setText(String(iconTex.count))
           const textSize = this.m_icons!.numberText.getTextSize()
@@ -1233,8 +1240,8 @@ export class Creature extends Thing {
       }
     }
 
-    pipeline.endCreatureInfo()
-    pipeline.resetDrawOrder()
+    g_drawPool.endCreatureInfo()
+    g_drawPool.resetDrawOrder()
   }
 
   private _getNameTextSize(): { width: number; height: number } {
@@ -1242,8 +1249,8 @@ export class Creature extends Thing {
     return { width: Math.min(200, name.length * 7), height: 12 }
   }
 
-  private _drawName(textRect: Rect, fillColor: { r: number; g: number; b: number }, pipeline: DrawPool) {
-    pipeline.addCreatureInfoText((this.m_name || '').trim() || 'Creature', textRect, fillColor)
+  private _drawName(textRect: Rect, fillColor: { r: number; g: number; b: number }) {
+    g_drawPool.addCreatureInfoText((this.m_name || '').trim() || 'Creature', textRect, fillColor)
   }
 
   private _bindRect(rect: Rect, parentRect: Rect): Rect {
@@ -1255,8 +1262,8 @@ export class Creature extends Thing {
     }
   }
 
-  calculateAnimationPhase(pipeline: DrawPool, animate: boolean) {
-    const ct = this.getThingType(pipeline)
+  calculateAnimationPhase(animate?: boolean) {
+    const ct = this.getThingType()
     const phases = ct ? ct.getPhasesForDraw(this.m_walking) : 1
     if (phases <= 1) return 0
     if (this.m_walking) {

@@ -5,6 +5,7 @@
 
 import { FEATURES, isFeatureEnabled } from '../protocol/features'
 import { g_game } from '../client/Game'
+import { g_drawPool } from '../graphics/DrawPoolManager'
 
 // thingtype.h FrameGroupType
 export enum FrameGroupType {
@@ -298,13 +299,13 @@ export class ThingType {
    *   yPattern – addon layer
    *   zPattern – mounted state
    */
-  draw(pipeline: any, dest: any, layer: number, xPattern: number, yPattern: number, zPattern: number, animationPhase: number, color: any, drawThings: boolean, lightView: any) {
+  draw(dest: any, layer: number, xPattern: number, yPattern: number, zPattern: number, animationPhase: number, color: any, drawThings: boolean, lightView: any) {
     if (this.m_null || this.m_animationPhases === 0) return
 
     // Outfits like 126 and 127 don't have animation; this line fixes a bug that makes them disappear while moving
     const animationFrameId = animationPhase % this.m_animationPhases
 
-    const things = pipeline.thingsRef?.current
+    const things = g_drawPool.thingsRef?.current
     if (!things?.sprites) return
 
     const frameGroupIndex = dest?.frameGroupIndex
@@ -312,8 +313,7 @@ export class ThingType {
     const phases = g ? Math.max(1, g.phases) : Math.max(1, this.m_animationPhases)
     const texture = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern, frameGroupIndex)
     if (!texture) {
-      // Reset any pending onlyOnce state to prevent stale opacity/shader from affecting subsequent draws when texture is still loading
-      pipeline.resetOnlyOnceParameters?.()
+      g_drawPool.resetOnlyOnceParameters()
       return
     }
 
@@ -321,39 +321,37 @@ export class ThingType {
     const frameIndex = this.getTextureIndex(layer, xPattern, yPattern, zPattern)
     const frameCount = Math.max(1, this.m_layers) * Math.max(1, this.m_numPatternZ) * Math.max(1, this.m_numPatternY) * Math.max(1, this.m_numPatternX)
     if (frameIndex >= frameCount || (textureData?.pos && frameIndex >= textureData.pos.length)) {
-      pipeline.resetOnlyOnceParameters?.()
+      g_drawPool.resetOnlyOnceParameters()
       return
     }
 
     const TILE_PIXELS = 32
-    const scaleFactor = pipeline.getScaleFactor?.() ?? 1
+    const scaleFactor = g_drawPool.getScaleFactor()
     const { tileX, tileY, drawElevationPx, tileZ, pixelOffsetX = 0, pixelOffsetY = 0 } = dest
     const bw = g ? g.width : this.getWidth()
     const bh = g ? g.height : this.getHeight()
     const dispX = this.getDisplacementX?.() ?? this.m_displacement?.x ?? 0
     const dispY = this.getDisplacementY?.() ?? this.m_displacement?.y ?? 0
-    // screenRect: dest + (textureOffset - m_displacement - (m_size - Point(1)) * spriteSize) * scaleFactor
-    // We build one texture per (phase, layer, x, y, z) so textureOffset is implicit; position in tile units:
     let dx = (-dispX / TILE_PIXELS - (bw - 1)) + (pixelOffsetX || 0) / TILE_PIXELS
     let dy = (dispY / TILE_PIXELS) - (pixelOffsetY || 0) / TILE_PIXELS + drawElevationPx / TILE_PIXELS
 
     const tx0 = tileX
     const ty0 = tileY
-    if (tx0 < 0 || tx0 >= pipeline.w || ty0 < 0 || ty0 >= pipeline.h) return
+    if (tx0 < 0 || tx0 >= g_drawPool.w || ty0 < 0 || ty0 >= g_drawPool.h) return
 
-    const tex = pipeline.texForCanvas?.(texture)
+    const tex = g_drawPool.texForCanvas(texture)
     if (!tex) {
-      pipeline.resetOnlyOnceParameters?.()
+      g_drawPool.resetOnlyOnceParameters()
       return
     }
 
     if (drawThings && texture) {
       const newColor = this.m_opacity < 1.0 && color ? { ...color, a: this.m_opacity } : color
-      if (pipeline.shaderNeedFramebuffer?.()) {
-        pipeline.drawWithFrameBuffer?.(tex, { tileX: tx0, tileY: ty0, width: bw, height: bh, z: tileZ ?? 0, dx, dy }, { x: 0, y: 0, w: bw * TILE_PIXELS, h: bh * TILE_PIXELS }, newColor ?? undefined)
+      if (g_drawPool.shaderNeedFramebuffer()) {
+        g_drawPool.drawWithFrameBuffer(tex, { tileX: tx0, tileY: ty0, width: bw, height: bh, z: tileZ ?? 0, dx, dy }, { x: 0, y: 0, w: bw * TILE_PIXELS, h: bh * TILE_PIXELS }, newColor ?? undefined)
       } else {
-        if (this.m_opacity < 1.0) pipeline.setOpacity?.(this.m_opacity, true)
-        pipeline.addTexturedRect({
+        if (this.m_opacity < 1.0) g_drawPool.setOpacity(this.m_opacity, true)
+        g_drawPool.addTexturedRect({
           tileX: tx0,
           tileY: ty0,
           texture: tex,
@@ -364,11 +362,10 @@ export class ThingType {
           dy,
           color: newColor ?? undefined,
         })
-        if (this.m_opacity < 1.0) pipeline.resetOpacity?.()
+        if (this.m_opacity < 1.0) g_drawPool.resetOpacity()
       }
     } else {
-      // Reset any pending onlyOnce state when not drawing things to prevent stale opacity/shader from affecting subsequent draws
-      pipeline.resetOnlyOnceParameters?.()
+      g_drawPool.resetOnlyOnceParameters()
     }
 
     if (lightView && this.hasLight?.()) {

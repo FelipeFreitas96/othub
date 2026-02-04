@@ -68,17 +68,7 @@ export class ClientMap {
 
   /** OTC: Map::addMapView(const MapViewPtr& mapView) – map.cpp L88. Registra pipeline; se local player já no mapa, follow. */
   addMapView(mapView: MapView) {
-    if (!mapView || this.m_mapViews.includes(mapView)) return
     this.m_mapViews.push(mapView)
-    if ((mapView as any).pipeline) {
-      g_drawPool.setPool(DrawPoolType.FOREGROUND_MAP, (mapView as any).pipeline)
-      g_drawPool.setPool(DrawPoolType.CREATURE_INFORMATION, (mapView as any).pipeline)
-    }
-    const playerId = g_player?.getId?.()
-    if (playerId != null) {
-      const creature = this.getCreatureById(playerId)
-      if (creature) (mapView as any).followCreature?.(creature)
-    }
   }
 
   /** OTC: Map::removeMapView(const MapViewPtr& mapView) – map.cpp L91-96. */

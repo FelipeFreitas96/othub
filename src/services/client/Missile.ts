@@ -4,7 +4,8 @@
  */
 
 import { Thing } from './Thing'
-import { DrawPool, DrawPoolType, DrawOrder } from '../graphics/DrawPool'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { DrawPoolType, DrawOrder } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
 import { ThingCategory } from '../things/thingType'
 import { g_map } from './ClientMap'
@@ -118,31 +119,25 @@ export class Missile extends Thing {
   getDirection(): DirectionType { return this.m_direction }
 
   /** OTC: void Missile::draw(const Point& dest, bool drawThings, LightView*) */
-  override draw(
-    pipeline: DrawPool,
-    tileX: number,
-    tileY: number,
-    drawElevationPx: number,
-    zOff: number,
-    tileZ: number
-  ): void {
+  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number): void {
+    if (!g_drawPool.isValid()) return
     if (!this.canDraw() || this.isHided()) return
-    const tt = this.getThingType(pipeline)
+    const tt = this.getThingType()
     if (!tt || tt.m_null || (tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 0) === 0) return
 
     const fraction = this.m_duration > 0 ? this.m_animationTimer.ticksElapsed() / this.m_duration : 1
-    const scaleFactor = pipeline.getScaleFactor?.() ?? 1
+    const scaleFactor = g_drawPool.getScaleFactor()
     const TILE_PIXELS = 32
     const offsetX = (this.m_delta.x * fraction * scaleFactor) / TILE_PIXELS
     const offsetY = (this.m_delta.y * fraction * scaleFactor) / TILE_PIXELS
 
-    if (pipeline.getCurrentType?.() === DrawPoolType.MAP) {
-      pipeline.setDrawOrder?.(DrawOrder.FOURTH)
-      const missileAlpha = (pipeline as any).getMissileAlpha?.() ?? 1
-      if (missileAlpha < 1) pipeline.setOpacity?.(missileAlpha, true)
+    if (g_drawPool.getCurrentType() === DrawPoolType.MAP) {
+      g_drawPool.setDrawOrder(DrawOrder.FOURTH)
+      const missileAlpha = (g_drawPool as any).getMissileAlpha?.() ?? 1
+      if (missileAlpha < 1) g_drawPool.setOpacity(missileAlpha, true)
     }
     if ((this as any).m_shaderId != null) {
-      (pipeline as any).setShaderProgram?.((globalThis as any).g_shaders?.getShaderById?.(this.m_shaderId), true)
+      (g_drawPool as any).setShaderProgram?.((globalThis as any).g_shaders?.getShaderById?.(this.m_shaderId), true)
     }
 
     const dest = {
