@@ -1,5 +1,4 @@
-import OtcImage from './ui/OtcImage'
-
+import OtcImage from './OtcImage'
 /**
  * GameRightPanel (gameRightPanel) - cópia de gameinterface.otui
  * Só o frame (9-slice). As janelas são renderizadas fora, em camada flutuante.

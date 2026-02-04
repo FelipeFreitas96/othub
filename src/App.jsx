@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from "react";
-import { GameTextMessageProvider } from "./components/modules/game_textmessage";
-import { CharacterList } from "./components/modules/character_list";
-import { EnterGame } from "./components/modules/entergame";
-import ClientBackground from "./components/ClientBackground";
-import GameInterface from "./components/GameInterface";
+import { GameTextMessageProvider } from "./modules/game_textmessage";
+import { CharacterList } from "./modules/client_entergame/characterlist";
+import { EnterGame } from "./modules/client_entergame";
+import ClientBackground from "./modules/client_background";
+import GameInterface from "./modules/game_interface";
 import { login } from "./services/protocol/loginProtocol";
 import { g_game } from './services/client/Game';
 

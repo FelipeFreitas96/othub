@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { MapView } from '../services/client/MapView'
 import { getThings, loadThings } from '../services/protocol/things'
 import { g_map } from '../services/client/ClientMap'
-import { useWalkController } from './modules/game_walk'
+import { useWalkController } from '../modules/game_walk'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 

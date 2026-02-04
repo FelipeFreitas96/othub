@@ -1,4 +1,4 @@
-import OtcImage from './ui/OtcImage'
+import OtcImage from './OtcImage'
 
 /**
  * GameBottomPanel - cópia de gameinterface.otui (gameBottomPanel)

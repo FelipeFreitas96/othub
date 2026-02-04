@@ -3,7 +3,7 @@
  * Ordem: Reset Experience Counter, separador, Level/Stamina/.../Fishing, separador,
  * Offence Stats, Defence Stats, Misc. Stats, separador, Show all Skill Bars.
  */
-import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from '../../../ui/ContextMenu'
+import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from '../../../components/ContextMenu'
 import { SkillsService } from '../service/skillsService'
 
 const { BAR_OPTIONS, MENU_LABELS } = SkillsService

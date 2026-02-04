@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import MiniWindow from '../ui/MiniWindow'
+import MiniWindow from '../../components/MiniWindow'
 
 /**
  * Inventory - cópia de modules/game_inventory/inventory.otui

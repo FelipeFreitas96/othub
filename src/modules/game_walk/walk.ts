@@ -1,11 +1,11 @@
 /**
  * Walk Module - 1:1 port from OTClient modules/game_walk/walk.lua
  */
-import { g_game } from '../../../services/client/Game'
-import { g_map } from '../../../services/client/ClientMap'
-import { g_player } from '../../../services/client/LocalPlayer'
-import { Direction, DirectionType, Position } from '../../../services/client/Position'
-import { isFeatureEnabled } from '../../../services/protocol/features'
+import { g_game } from '../../services/client/Game'
+import { g_map } from '../../services/client/ClientMap'
+import { g_player } from '../../services/client/LocalPlayer'
+import { Direction, DirectionType, Position } from '../../services/client/Position'
+import { isFeatureEnabled } from '../../services/protocol/features'
 
 // State
 let smartWalkDirs: DirectionType[] = []

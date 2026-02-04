@@ -1,29 +1,13 @@
-/**
- * Skills - reimaginado de OTClient modules/game_skills/skills.otui + skills.lua
- * MiniWindow com lista vertical: Level, Experience, XP Gain Rate, XpBoostButton,
- * Hit Points, Mana, Soul, Capacity, Speed, Regeneration Time, Stamina, Offline Training,
- * separador, Magic Level + skills (Fist..Fishing) com ícone e barra verde,
- * separador, SmallSkillButton (Critical Hit Chance .. Transcendence).
- * Menu de contexto: Reset Experience Counter, toggle barras, Offence/Defence/Misc Stats, Show all Skill Bars.
- *
- * Regra de negócio do skills.lua:
- * - init(): atalho Alt+S, connect "game" (online/offline), setupUIButtons, refresh
- * - terminate(): disconnect, remove keybind
- * - online(): refresh, loadSkillsVisibilitySettings, hideOldClientStats, updateHeight
- * - offline(): reset valores, esconder grupos offence/defence/misc
- * - refresh(): preencher da LocalPlayer (experience, level, health, mana, skills...)
- * - setSkillValue/setSkillBase/setSkillPercent, checkAlert, ExpRating, statsCache
- */
 import { useState, useCallback, useEffect, useRef } from 'react'
-import MiniWindow from '../../../ui/MiniWindow'
-import { useWindowVisibility } from '../../../../hooks/useWindowVisibility'
-import { g_game } from '../../../../services/client/Game';  
-import { useSkillsGameState } from '../hooks/useSkillsGameState'
-import SkillRow from './SkillRow'
-import SkillsMenu from './SkillsMenu'
-import { SkillsService } from '../service/skillsService'
-import { useGameTextMessage } from '../../game_textmessage'
-import { GameEventsEnum } from '../../../../services/client/Const';
+import MiniWindow from '../../components/MiniWindow'
+import { useWindowVisibility } from '../../hooks/useWindowVisibility'
+import { g_game } from '../../services/client/Game';  
+import { useSkillsGameState } from './hooks/useSkillsGameState'
+import SkillRow from './ui/SkillRow'
+import SkillsMenu from './ui/SkillsMenu'
+import { SkillsService } from './service/skillsService'
+import { useGameTextMessage } from '../game_textmessage'
+import { GameEventsEnum } from '../../services/client/Const';
 
 const { ROWS, ROW_ID_TO_KEY, DEFAULT_VISIBILITY, STORAGE_KEY } = SkillsService
 

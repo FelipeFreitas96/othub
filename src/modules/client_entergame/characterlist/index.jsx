@@ -6,7 +6,7 @@ import { useState } from 'react'
 import CharacterListWindow from './ui/CharacterListWindow'
 import { g_game } from '../../../services/client/Game'
 
-export default function CharacterList({ characters, onGameStart, onBack }) {
+export function CharacterList({ characters, onGameStart, onBack }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 

@@ -1,5 +1,4 @@
-import MiniWindow from '../ui/MiniWindow'
-
+import MiniWindow from '../../components/MiniWindow'
 /**
  * Minimap - cópia de modules/game_minimap/minimap.otui
  * Imagens: public/images/ui/1pixel_down_frame, public/images/automap/

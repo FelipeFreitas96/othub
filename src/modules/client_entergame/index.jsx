@@ -1,12 +1,7 @@
 import { useState } from 'react'
-import { WINDOW_CONFIG, LABELS, BUTTONS, CLIENT_VERSIONS, DEFAULT_SERVER, validateCredentials, buildCredentials } from '../service/enterGameService'
+import { WINDOW_CONFIG, LABELS, BUTTONS, CLIENT_VERSIONS, DEFAULT_SERVER, validateCredentials, buildCredentials } from './service/enterGameService'
 
-/**
- * EnterGameWindow - UI component for the Enter Game window
- * Adapted from modules/client_entergame/entergame.otui
- * MainWindow "Enter Game", size 280x302
- */
-export default function EnterGameWindow({ onLogin, onLoginSuccess }) {
+export function EnterGame({ onLogin, onLoginSuccess }) {
   const [account, setAccount] = useState('poporai')
   const [password, setPassword] = useState('AhW3RDwl')
   const [server, setServer] = useState(DEFAULT_SERVER.host)

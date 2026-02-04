@@ -6,7 +6,7 @@
  */
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { SkillsService } from '../service/skillsService'
-import { g_player } from '../../../../services/client/LocalPlayer'
+import { g_player } from '../../../services/client/LocalPlayer'
 
 /** Player mock padrão quando não há g_game (fallback) */
 const DEFAULT_PLAYER = {

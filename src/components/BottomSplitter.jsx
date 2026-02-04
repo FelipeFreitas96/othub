@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react'
-import OtcImage from './ui/OtcImage'
+import OtcImage from './OtcImage'
 
 /**
  * BottomSplitter - cópia de gameinterface.otui (bottomSplitter)

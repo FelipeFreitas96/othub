@@ -1,14 +1,10 @@
-import HealthMana from './modules/HealthMana'
+import HealthMana from '../game_healthinfo'
 
-/**
- * TopStatsBar - cópia de gameinterface.otui (gameTopPanel)
- * Imagens: public/images/ui/ (image-source: /images/ui/topstats_button_panel, image-clip)
- */
 const IMG = {
   topstatsButtonPanel: '/images/ui/topstats_button_panel.png',
 }
 
-export default function TopStatsBar() {
+export default function ClientTopMenu() {
   return (
     <div className="h-8 flex-shrink-0 flex items-center px-2 bg-ot-panel border-b border-ot-border shadow-ot-panel">
       {/* image-clip: x y width height = elemento width x height, backgroundPosition -x -y, backgroundSize auto */}
