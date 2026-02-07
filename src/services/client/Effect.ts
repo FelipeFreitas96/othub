@@ -3,7 +3,7 @@
  * Copyright (c) 2010-2026 OTClient <https://github.com/edubart/otclient>; ported to JS.
  */
 
-import { Thing } from './Thing'
+import { Thing, type DrawDest } from './Thing'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawPoolType } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
@@ -13,6 +13,10 @@ import { g_client } from './Client'
 import { g_dispatcher } from '../framework/EventDispatcher'
 import { getThings } from '../protocol/things'
 import { Position } from './Position'
+import { Point } from '../graphics/declarations'
+import { LightView } from './LightView'
+import { FEATURES, isFeatureEnabled } from '../protocol/features'
+import { g_gameConfig } from './gameConfig'
 
 /** OTC: Timer – ticksElapsed() in ms for port. */
 function createTimer() {
@@ -33,8 +37,17 @@ export class Effect extends Thing {
   /** OTC: m_numPatternX, m_numPatternY – set in setPosition */
   m_numPatternX = 0
   m_numPatternY = 0
+  /** OTC: m_shaderId – custom shader for this effect (optional). */
+  m_shaderId: number | null = null
 
   override isEffect(): boolean { return true }
+
+  /** OTC: getNumPatternX() / getNumPatternY() – pattern count from thing type. */
+  getNumPatternX(): number { return this.getThingType()?.patternX ?? this.getThingType()?.m_numPatternX ?? 1 }
+  getNumPatternY(): number { return this.getThingType()?.patternY ?? this.getThingType()?.m_numPatternY ?? 1 }
+
+  /** OTC: hasShader() – effect has custom shader. */
+  hasShader(): boolean { return this.m_shaderId != null && this.m_shaderId !== 0 }
 
   /** OTC: ThingType* Effect::getThingType() const */
   override getThingType(): ThingType | null {
@@ -67,7 +80,7 @@ export class Effect extends Thing {
     const ticksElapsed = other.m_animationTimer.ticksElapsed()
     const tt = this.getThingType()
     const phases = Math.max(1, tt?.getAnimationPhases?.() ?? tt?.m_animationPhases ?? 1)
-    const effectTicksPerFrame = 100 // stub: g_gameConfig.getEffectTicksPerFrame()
+    const effectTicksPerFrame = g_gameConfig.getEffectTicksPerFrame()
     const minDuration = (tt?.m_animator ? (tt as any).getIdleAnimator?.()?.getMinDuration?.() : effectTicksPerFrame) ?? effectTicksPerFrame
     const minDurationMs = minDuration * Math.max(Math.floor(phases / 3), 1)
     if (ticksElapsed <= minDurationMs) return false
@@ -76,23 +89,26 @@ export class Effect extends Thing {
     return true
   }
 
-  /** OTC: void Effect::draw(const Point& dest, bool drawThings, LightView*) */
-  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number): void {
+  /**
+   * OTC: void Effect::draw(const Point& dest, const bool drawThings, LightView* lightView)
+   */
+  override draw(dest: DrawDest, drawThings: boolean, lightView?: LightView | null): void {
     if (!g_drawPool.isValid()) return
     if (!this.canDraw() || this.isHided()) return
     if (this.m_animationTimer.ticksElapsed() < this.m_timeToStartDrawing) return
 
+    const thingType = this.getThingType()
     let animationPhase = 0
-    const tt = this.getThingType()
-    if (tt && (tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 0) > 1) {
-      const animator = (tt as any).getIdleAnimator?.()
-      if (animator?.getPhaseAt) {
-        animationPhase = animator.getPhaseAt(this.m_animationTimer)
+    const canAnimate = thingType && (thingType.getAnimationPhases?.() ?? thingType.m_animationPhases ?? 0) > 1
+    if (canAnimate) {
+      if (isFeatureEnabled(FEATURES.GameEnhancedAnimations)) {
+        const animator = (thingType as any).getIdleAnimator?.()
+        if (!animator) return
+        animationPhase = animator.getPhaseAt?.(this.m_animationTimer) ?? 0
       } else {
-        const effectTicksPerFrame = 100
-        const phases = Math.max(1, tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 1)
-        let ticks = effectTicksPerFrame
-        if (Number(this.m_clientId) === 33) ticks *= 4
+        let ticks = g_gameConfig.getEffectTicksPerFrame()
+        if (Number(this.m_clientId) === 33) ticks <<= 2
+        const phases = Math.max(1, thingType!.getAnimationPhases?.() ?? thingType!.m_animationPhases ?? 1)
         animationPhase = Math.min(
           Math.floor(this.m_animationTimer.ticksElapsed() / ticks),
           phases - 1
@@ -106,35 +122,45 @@ export class Effect extends Thing {
 
     const offsetX = pos.x - center.x
     const offsetY = pos.y - center.y
-    const numPatternX = tt?.patternX ?? tt?.m_numPatternX ?? 1
-    const numPatternY = tt?.patternY ?? tt?.m_numPatternY ?? 1
-    let xPattern = ((offsetX % numPatternX) + numPatternX) % numPatternX
-    xPattern = 1 - xPattern - numPatternX
-    if (xPattern < 0) xPattern += numPatternX
-    let yPattern = ((offsetY % numPatternY) + numPatternY) % numPatternY
+    const numPatternX = this.getNumPatternX()
+    const numPatternY = this.getNumPatternY()
 
-    if (!tt || tt.m_null || (tt.getAnimationPhases?.() ?? tt.m_animationPhases ?? 0) === 0) return
+    let xPattern: number
+    let yPattern: number
+    if (isFeatureEnabled(FEATURES.GameMapOldEffectRendering)) {
+      xPattern = offsetX % numPatternX
+      if (xPattern < 0) xPattern += numPatternX
+      yPattern = offsetY % numPatternY
+      if (yPattern < 0) yPattern += numPatternY
+    } else {
+      xPattern = ((offsetX >>> 0) % numPatternX) as number
+      xPattern = 1 - xPattern - numPatternX
+      if (xPattern < 0) xPattern += numPatternX
+      yPattern = ((offsetY >>> 0) % numPatternY) as number
+    }
+
+    if (!thingType || thingType.m_null || (thingType.getAnimationPhases?.() ?? thingType.m_animationPhases ?? 0) === 0) return
+
     if (g_drawPool.getCurrentType?.() === DrawPoolType.MAP) {
-      const effectAlpha = g_client.getEffectAlpha()
-      if (effectAlpha < 1) {
-        g_drawPool.setOpacity(effectAlpha, true)
+      if (drawThings && g_client.getEffectAlpha() < 1) {
+        g_drawPool.setOpacity(g_client.getEffectAlpha(), true)
       }
     }
-    
-    if (this.m_shaderId != null) {
-      g_drawPool.setShaderProgram(this.g_shaders.getShaderById(this.m_shaderId), true)
+    if (drawThings && this.hasShader()) {
+      const gShaders = (globalThis as any).g_shaders
+      if (gShaders?.getShaderById) {
+        g_drawPool.setShaderProgram?.(gShaders.getShaderById(this.m_shaderId), true)
+      }
     }
 
     const TILE_PIXELS = 32
-    const dest = {
-      tileX,
-      tileY,
-      drawElevationPx,
-      zOff,
-      tileZ,
+    const destObj = {
+      tileX: (dest.x ?? 0) / TILE_PIXELS,
+      tileY: (dest.y ?? 0) / TILE_PIXELS,
+      drawElevationPx: dest.drawElevationPx ?? 0,
+      tileZ: dest.tileZ ?? 0,
     }
-
-    tt.draw(dest, 0, xPattern, yPattern, 0, animationPhase, { r: 255, g: 255, b: 255 }, true, null)
+    thingType.draw(destObj, 0, xPattern, yPattern, 0, animationPhase, { r: 255, g: 255, b: 255 }, drawThings, lightView ?? null)
   }
 
   /** OTC: void Effect::onAppear() */
@@ -144,15 +170,14 @@ export class Effect extends Thing {
     if (animator?.getTotalDuration) {
       this.m_duration = animator.getTotalDuration()
     } else {
-      const effectTicksPerFrame = 100
+      const effectTicksPerFrame = g_gameConfig.getEffectTicksPerFrame()
       let d = effectTicksPerFrame
       if (Number(this.m_clientId) === 33) d *= 4
       this.m_duration = d * Math.max(1, tt?.getAnimationPhases?.() ?? tt?.m_animationPhases ?? 1)
     }
     this.m_animationTimer.restart()
-    g_dispatcher.scheduleEvent(() => {;
+    g_dispatcher.scheduleEvent(() => {
       g_map.removeThing(this)
-      console.log("REMOVA OS EFEITO")
     }, this.m_duration)
   }
 

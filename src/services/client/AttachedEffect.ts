@@ -435,7 +435,7 @@ export class AttachedEffect implements IAttachedEffectLike {
 
     if (drawThing) {
       for (const effect of this.m_effects) {
-        effect.draw(dest, isOnTop, lightView, true)
+        effect.draw(dest, true, lightView)
       }
     }
   }
@@ -443,7 +443,7 @@ export class AttachedEffect implements IAttachedEffectLike {
   drawLight(dest: Point, lightView: LightView | null): void {
     if (!lightView) return
     const dirControl = this.m_offsetDirections[this.m_direction as number] ?? makeDirControl(false, { x: 0, y: 0 })
-    this.draw(dest, dirControl.onTop, lightView, false)
+    this.draw(dest, dirControl.onTop, lightView)
     for (const effect of this.m_effects) {
       effect.drawLight(dest, lightView)
     }

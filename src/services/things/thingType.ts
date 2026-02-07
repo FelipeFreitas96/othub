@@ -5,7 +5,10 @@
 
 import { FEATURES, isFeatureEnabled } from '../protocol/features'
 import { g_game } from '../client/Game'
+import { DrawPoolType } from '../graphics/DrawPool'
 import { g_drawPool } from '../graphics/DrawPoolManager'
+import { g_painter } from '../graphics/Painter'
+import { getThings } from '../protocol/things'
 
 // thingtype.h FrameGroupType
 export enum FrameGroupType {
@@ -237,10 +240,6 @@ export class ThingType {
     return ((l * this.m_numPatternZ + z) * this.m_numPatternY + y) * this.m_numPatternX + x
   }
 
-  /**
-   * OTC getTexture(animationPhase) – returns the full texture for that phase.
-   * frameGroupIndex: when set (creatures with Idle/Moving), use that group's sprites.
-   */
   getTexture(animationPhase: number, sprites: any, layer: number, xPattern: number, yPattern: number, zPattern: number, frameGroupIndex?: number) {
     if (this.m_null || !sprites?.getCanvas) return null
     const key = frameGroupIndex != null ? `${frameGroupIndex}_${animationPhase}_${layer}_${xPattern}_${yPattern}_${zPattern}` : `${animationPhase}_${layer}_${xPattern}_${yPattern}_${zPattern}`
@@ -305,64 +304,104 @@ export class ThingType {
     // Outfits like 126 and 127 don't have animation; this line fixes a bug that makes them disappear while moving
     const animationFrameId = animationPhase % this.m_animationPhases
 
-    const things = g_drawPool.thingsRef?.current
+    const things = getThings()
     if (!things?.sprites) return
 
-    const frameGroupIndex = dest?.frameGroupIndex
-    const g = frameGroupIndex != null ? this.m_frameGroups?.[frameGroupIndex] : null
-    const phases = g ? Math.max(1, g.phases) : Math.max(1, this.m_animationPhases)
-    const texture = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern, frameGroupIndex)
-    if (!texture) {
+    const textureCanvas = this.getTexture(animationFrameId, things.sprites, layer, xPattern, yPattern, zPattern, dest?.frameGroupIndex)
+    if (!textureCanvas) {
       g_drawPool.resetOnlyOnceParameters()
       return
     }
 
     const textureData = this.m_textureData[animationFrameId]
+    if (textureData) textureData.source = textureCanvas
+
     const frameIndex = this.getTextureIndex(layer, xPattern, yPattern, zPattern)
-    const frameCount = Math.max(1, this.m_layers) * Math.max(1, this.m_numPatternZ) * Math.max(1, this.m_numPatternY) * Math.max(1, this.m_numPatternX)
-    if (frameIndex >= frameCount || (textureData?.pos && frameIndex >= textureData.pos.length)) {
+    if (textureData?.pos && frameIndex >= textureData.pos.length) {
       g_drawPool.resetOnlyOnceParameters()
       return
     }
 
-    const TILE_PIXELS = 32
-    const scaleFactor = g_drawPool.getScaleFactor()
-    const { tileX, tileY, drawElevationPx, tileZ, pixelOffsetX = 0, pixelOffsetY = 0 } = dest
+    const frameGroupIndex = dest?.frameGroupIndex
+    const g = frameGroupIndex != null ? this.m_frameGroups?.[frameGroupIndex] : null
     const bw = g ? g.width : this.getWidth()
     const bh = g ? g.height : this.getHeight()
+
+    // OTC: textureOffset = textureData.pos[frameIndex].offsets, textureRect = textureData.pos[frameIndex].rects
+    // We use canvas-per-frame: single frame per texture → offset (0,0), rect = full texture
+    const spriteSize = 32
+    const scaleFactor = g_drawPool.getScaleFactor()
+    const textureOffset = textureData?.pos?.[frameIndex]?.offsets ?? { x: 0, y: 0 }
+    const textureRect = textureData?.pos?.[frameIndex]?.rects ?? {
+      x: 0,
+      y: 0,
+      width: (textureCanvas as HTMLCanvasElement).width ?? bw * spriteSize,
+      height: (textureCanvas as HTMLCanvasElement).height ?? bh * spriteSize,
+    }
     const dispX = this.getDisplacementX?.() ?? this.m_displacement?.x ?? 0
     const dispY = this.getDisplacementY?.() ?? this.m_displacement?.y ?? 0
-    let dx = (-dispX / TILE_PIXELS - (bw - 1)) + (pixelOffsetX || 0) / TILE_PIXELS
-    let dy = (dispY / TILE_PIXELS) - (pixelOffsetY || 0) / TILE_PIXELS + drawElevationPx / TILE_PIXELS
+    const pixelOffsetX = dest?.pixelOffsetX ?? 0
+    const pixelOffsetY = dest?.pixelOffsetY ?? 0
+    const drawElevationPx = dest?.drawElevationPx ?? 0
+    const tileZ = dest?.tileZ ?? 0
 
-    const tx0 = tileX
-    const ty0 = tileY
-    if (tx0 < 0 || tx0 >= g_drawPool.w || ty0 < 0 || ty0 >= g_drawPool.h) return
+    // OTC: dest = Point (logical pixels). Caller uses newDest = dest - drawElevation (elevation subtracts from Y).
+    const destPoint = {
+      x: (dest?.tileX ?? 0) * spriteSize + pixelOffsetX,
+      y: (dest?.tileY ?? 0) * spriteSize + pixelOffsetY - drawElevationPx,
+    }
 
-    const tex = g_drawPool.texForCanvas(texture)
+    // OTC: screenRect = Rect(dest + (textureOffset - m_displacement - (m_size - Point(1)) * spriteSize) * scaleFactor, textureRect.size() * scaleFactor)
+    const sizeMinusOne = { x: bw - 1, y: bh - 1 }
+    const offsetLogicalX = textureOffset.x - dispX - sizeMinusOne.x * spriteSize
+    const offsetLogicalY = textureOffset.y - dispY - sizeMinusOne.y * spriteSize
+    const screenRect = {
+      x: (destPoint.x + offsetLogicalX) * scaleFactor,
+      y: (destPoint.y + offsetLogicalY) * scaleFactor,
+      width: (textureRect.width ?? bw * spriteSize) * scaleFactor,
+      height: (textureRect.height ?? bh * spriteSize) * scaleFactor,
+    }
+
+    const tx0 = dest?.tileX ?? 0
+    const ty0 = dest?.tileY ?? 0
+    const mapPool = g_drawPool.get(DrawPoolType.MAP)
+    const poolW = mapPool?.w ?? 0
+    const poolH = mapPool?.h ?? 0
+    if (poolW > 0 && poolH > 0 && (tx0 < 0 || tx0 >= poolW || ty0 < 0 || ty0 >= poolH)) return
+
+    // getTexture() returns a canvas; we need the GPU texture for drawing (pool/painter upload the canvas).
+    let tex: unknown = g_drawPool.texForCanvas(textureCanvas as HTMLCanvasElement)
+    if (!tex && textureCanvas && typeof (textureCanvas as HTMLCanvasElement).width === 'number') {
+      tex = g_painter.texForCanvas(textureCanvas as HTMLCanvasElement)
+    }
     if (!tex) {
       g_drawPool.resetOnlyOnceParameters()
       return
     }
 
-    if (drawThings && texture) {
+    if (drawThings && textureCanvas) {
       const newColor = this.m_opacity < 1.0 && color ? { ...color, a: this.m_opacity } : color
+      // Ensure we add to the MAP pool (caller may be drawing map tiles from a context where another pool is selected).
+      g_drawPool.select(DrawPoolType.MAP)
       if (g_drawPool.shaderNeedFramebuffer()) {
-        g_drawPool.drawWithFrameBuffer(tex, { tileX: tx0, tileY: ty0, width: bw, height: bh, z: tileZ ?? 0, dx, dy }, { x: 0, y: 0, w: bw * TILE_PIXELS, h: bh * TILE_PIXELS }, newColor ?? undefined)
+        g_drawPool.drawWithFrameBuffer(
+          tex,
+          { x: screenRect.x, y: screenRect.y, width: screenRect.width, height: screenRect.height, z: tileZ },
+          { x: textureRect.x ?? 0, y: textureRect.y ?? 0, width: textureRect.width, height: textureRect.height },
+          newColor ?? undefined
+        )
       } else {
-        if (this.m_opacity < 1.0) g_drawPool.setOpacity(this.m_opacity, true)
         g_drawPool.addTexturedRect({
+          pixelX: screenRect.x,
+          pixelY: screenRect.y,
+          pixelWidth: screenRect.width,
+          pixelHeight: screenRect.height,
           tileX: tx0,
           tileY: ty0,
           texture: tex,
-          width: bw,
-          height: bh,
-          z: tileZ ?? 0,
-          dx,
-          dy,
+          z: tileZ,
           color: newColor ?? undefined,
         })
-        if (this.m_opacity < 1.0) g_drawPool.resetOpacity()
       }
     } else {
       g_drawPool.resetOnlyOnceParameters()
@@ -371,9 +410,9 @@ export class ThingType {
     if (lightView && this.hasLight?.()) {
       const light = this.getLight()
       if (light) {
-        const centerPxX = tx0 * TILE_PIXELS + (bw * TILE_PIXELS) / 2 + dx * TILE_PIXELS * scaleFactor
-        const centerPxY = ty0 * TILE_PIXELS + (bh * TILE_PIXELS) / 2 - dy * TILE_PIXELS * scaleFactor
-        lightView.addLightSource?.(centerPxX, centerPxY, light, 1)
+        const centerX = screenRect.x + screenRect.width / 2
+        const centerY = screenRect.y + screenRect.height / 2
+        lightView.addLightSource?.(centerX, centerY, light, 1)
       }
     }
   }

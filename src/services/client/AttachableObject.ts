@@ -285,7 +285,7 @@ export abstract class AttachableObject {
     if (!this.hasAttachedEffects()) return
     for (const effect of this.m_data!.attachedEffects) {
       const drawDest = effect.isFollowingOwner() ? dest : originalDest
-      effect.draw(drawDest, isOnTop, lightView, true)
+      effect.draw(drawDest, true, lightView)
       if (effect.getLoop() === 0) {
         const self = this
         g_dispatcher.addEvent(() => {

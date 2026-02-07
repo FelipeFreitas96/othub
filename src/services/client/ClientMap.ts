@@ -169,9 +169,85 @@ export class ClientMap {
     return dx <= r.left && dx <= r.right && dy <= r.top && dy <= r.bottom
   }
 
+  /** OTC Map::isLookPossible(pos) – tiles we can look through (e.g. windows, doors). Stub: true. */
+  isLookPossible(_pos: PositionLike): boolean {
+    return true
+  }
+
   getTile(pos: PositionLike): Tile | null {
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null
     return this.m_tiles.get(this._key(pos.x, pos.y, pos.z)) || null
+  }
+
+  /** OTC: same as getTile({ x, y, z }). */
+  getTileWorld(x: number, y: number, z: number): Tile | null {
+    return this.getTile({ x, y, z })
+  }
+
+  /**
+   * OTC Map::isCovered(pos, isLoading, firstFloor) – map.cpp L699-722.
+   * Check tiles on top of position; if any is fully opaque or has top ground, position is covered.
+   */
+  isCovered(pos: PositionLike, isLoadingRef: { isLoading: boolean }, firstFloor: number): boolean {
+    const tilePos = Position.from(pos).clone()
+    while (tilePos.coveredUp(1) && tilePos.z >= firstFloor) {
+      const tile = this.getTile(tilePos)
+      if (tile?.isLoading?.()) {
+        isLoadingRef.isLoading = true
+        return false
+      }
+      if (tile?.isFullyOpaque?.()) return true
+      const tile11 = this.getTile(tilePos.translated(1, 1))
+      if (tile11?.hasTopGround?.()) return true
+    }
+    return false
+  }
+
+  /**
+   * OTC Map::isCompletelyCovered(pos, isLoading, firstFloor) – map.cpp L724-773.
+   * For each floor above (coveredUp): (1) Top Ground check at tilePos and tilePos+(1,1); (2) 2x2 isFullyOpaque at tilePos.translated(-x,-y).
+   */
+  isCompletelyCovered(pos: PositionLike, isLoadingRef: { isLoading: boolean }, firstFloor: number, types?: any): boolean {
+    const checkTile = this.getTile(pos)
+    const tilePos = Position.from(pos).clone()
+    while (tilePos.coveredUp(1) && tilePos.z >= firstFloor) {
+      let covered = true
+      let done = false
+      // Check is Top Ground – OTC: getTile(tilePos.translated(x, x)) for x,y in 0..1 (so (0,0) and (1,1))
+      for (let x = 0; x < 2 && !done; x++) {
+        for (let y = 0; y < 2 && !done; y++) {
+          const tile = this.getTile(tilePos.translated(x, x))
+          if (!tile || !tile.hasTopGround()) {
+            covered = false
+            done = true
+          } else if (x === 1 && y === 1 && (!checkTile || checkTile.isSingleDimension(types))) {
+            done = true
+          }
+        }
+      }
+      if (covered) return true
+
+      covered = true
+      done = false
+      // check in 2x2 range tiles that have no transparent pixels – OTC: getTile(tilePos.translated(-x, -y))
+      for (let x = 0; x < 2 && !done; x++) {
+        for (let y = 0; y < 2 && !done; y++) {
+          const tile = this.getTile(tilePos.translated(-x, -y))
+          if (tile?.isLoading?.()) {
+            isLoadingRef.isLoading = true
+            return false
+          }
+          if (!tile || !tile.isFullyOpaque()) {
+            covered = false
+            done = true
+          } else if (x === 0 && y === 0 && (!checkTile || checkTile.isSingleDimension(types))) {
+            done = true
+          }
+        }
+      }
+      if (covered) return true
+    }
+    return false
   }
 
   getOrCreateTile(pos: PositionLike): Tile | null {
@@ -248,7 +324,7 @@ export class ClientMap {
     }
     // Notifica os MapViews para atualizarem o cache de tiles visíveis
     for (const mapView of this.m_mapViews) {
-      mapView.requestVisibleTilesCacheUpdate?.()
+      mapView.requestUpdateVisibleTiles?.()
     }
   }
 

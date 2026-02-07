@@ -40,7 +40,7 @@ export const CLIENT_VERSIONS = [
 
 /** Default server configuration */
 export const DEFAULT_SERVER = {
-    host: 'blazera.net',
+    host: 'amirots.com',
     port: '7171',
     clientVersion: '860',
 }

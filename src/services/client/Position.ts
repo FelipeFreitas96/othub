@@ -169,6 +169,11 @@ export class Position {
     return new Position(this.x - other.x, this.y - other.y, this.z - other.z)
   }
 
+  /** OTC Position::isValid() – not the invalid sentinel (0xFFFF, 0xFFFF, 0xFF). */
+  isValid(): boolean {
+    return !(this.x === 0xFFFF && this.y === 0xFFFF && this.z === 0xFF)
+  }
+
   // Equality check
   equals(other: Position | { x: number, y: number, z: number } | null | undefined): boolean {
     if (!other) return false

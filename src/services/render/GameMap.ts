@@ -1,8 +1,9 @@
-import { Tile } from '../client/Tile'
+import { Tile, TILE_PIXELS } from '../client/Tile'
 import { Position } from '../client/Position'
 import { DEFAULT_DRAW_FLAGS } from '../graphics/drawFlags'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import { g_drawPool } from '../graphics/DrawPoolManager'
+import { getThings } from '../protocol/things'
 
 /** OTC: MapView lê tiles direto do mapa (g_map.getTile). Interface para GameMap delegar. */
 export interface MapSource {
@@ -138,7 +139,7 @@ export class GameMap {
 
   draw() {
     if (!g_drawPool.isValid()) return
-    const things = g_drawPool.thingsRef?.current
+    const things = getThings()
     if (!things) return
 
     // Enable multifloor when we have multiple floors available.
@@ -165,7 +166,7 @@ export class GameMap {
           if (!t) continue
           if (!t.isDrawable()) continue
           if (this.isCompletelyCovered(t, firstFloor, things.types)) continue
-          t.draw(drawFlags, x, y)
+          t.draw({ x: x * TILE_PIXELS, y: y * TILE_PIXELS }, drawFlags)
         }
       }
     }

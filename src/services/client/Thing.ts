@@ -5,14 +5,29 @@
  * Draw calls use g_drawPool (DrawPoolManager) directly; no pipeline param, like OTClient.
  */
 
+import { Point } from '../graphics/declarations'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { ThingType } from '../things/thingType'
 import { g_map } from './ClientMap'
+import { UINT8_MAX } from './Const'
+import { UINT16_MAX } from './Const'
+import { LightView } from './LightView'
 import { Position } from './Position'
 import { Tile } from './Tile'
 
+/** Dest for Thing.draw(): pixel position (x,y) plus optional tile/elevation/offset/flags. */
+export type DrawDest = Point & {
+  drawElevationPx?: number
+  tileZ?: number
+  pixelOffsetX?: number
+  pixelOffsetY?: number
+  drawFlags?: number
+  isWalkDraw?: boolean
+}
+
+
 export abstract class Thing {
-  protected m_position: Position | null = null
+  protected m_position: Position = new Position(UINT16_MAX, UINT16_MAX, UINT8_MAX)
   protected m_clientId: number | string = 0
   protected m_stackPos: number = -1
 
@@ -20,7 +35,7 @@ export abstract class Thing {
   setId(id: number | string) { this.m_clientId = id }
   getId(): number | string { return this.m_clientId }
   
-  getPosition(): Position | null { return this.m_position }
+  getPosition(): Position { return this.m_position }
   setPosition(pos: Position, stackPos: number = 0) { 
     this.m_position = pos
     this.m_stackPos = stackPos
@@ -54,7 +69,7 @@ export abstract class Thing {
   isPlayer(): boolean { return false }
   isLocalPlayer(): boolean { return false }
 
-  // ThingType access - abstract; subclasses use g_drawPool.thingsRef when needed
+  // ThingType access - abstract; subclasses use getThings() when needed
   abstract getThingType(): ThingType | null
 
   // Methods that delegate to ThingType (1:1 thing.cpp)
@@ -126,14 +141,9 @@ export abstract class Thing {
 
   // Drawing - abstract; use g_drawPool (DrawPoolManager) inside; no pipeline param, like OTClient
   abstract draw(
-    tileX: number,
-    tileY: number,
-    drawElevationPx: number,
-    zOff: number,
-    tileZ: number,
-    pixelOffsetX?: number,
-    pixelOffsetY?: number,
-    isWalkDraw?: boolean
+    dest: DrawDest,
+    drawThings: boolean,
+    lightView?: LightView | null
   ): void
 
   // Optional light drawing

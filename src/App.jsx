@@ -6,6 +6,7 @@ import ClientBackground from "./modules/client_background";
 import GameInterface from "./modules/game_interface";
 import { login } from "./services/protocol/loginProtocol";
 import { g_game } from './services/client/Game';
+import { g_drawPool } from "./services/graphics/DrawPoolManager";
 
 /**
  * OTClient Web UI - Fluxo de início
@@ -19,6 +20,7 @@ function AppContent() {
   const [characters, setCharacters] = useState(null);
   const handleLoginSuccess = useCallback(
     (list, clientVersion) => {
+      g_drawPool.init(32);
       g_game.setClientVersion(clientVersion);
       setCharacters(list);
     },

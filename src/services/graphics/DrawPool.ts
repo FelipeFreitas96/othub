@@ -5,7 +5,12 @@
 
 import * as THREE from 'three'
 import { g_painter } from './Painter'
-import type { Rect, Color } from './Painter'
+import type { Rect, Color, PainterState } from './Painter'
+import { FrameBuffer } from './FrameBuffer'
+import { CoordsBuffer } from './CoordsBuffer'
+import { DrawMode } from './declarations'
+import type { Point, Size } from './declarations'
+import { sizeValid } from './declarations'
 
 const DEFAULT_DISPLAY_DENSITY = 1
 
@@ -88,19 +93,13 @@ export interface DrawMethod {
   type: DrawMethodType
   dest: Rect
   src: Rect
-  a?: { x: number; y: number }
-  b?: { x: number; y: number }
-  c?: { x: number; y: number }
+  a?: Point
+  b?: Point
+  c?: Point
   intValue?: number
 }
 
-/** CoordsBuffer – we use rect list (OTC uses vertex arrays). */
-export interface CoordsBufferLike {
-  rects: DrawRect[]
-  append?(other: CoordsBufferLike | null): void
-  clear(): void
-}
-
+/** Legacy rect payload for addTexturedRect(rect) and game code. */
 export interface DrawRect {
   tileX?: number
   tileY?: number
@@ -109,6 +108,10 @@ export interface DrawRect {
   z?: number
   dx?: number
   dy?: number
+  pixelX?: number
+  pixelY?: number
+  pixelWidth?: number
+  pixelHeight?: number
   texture?: unknown
   color?: Color
   __compositionMode?: number
@@ -163,7 +166,7 @@ function poolStateEquals(a: PoolState, b: PoolState): boolean {
 /** OTC: DrawObject */
 export interface DrawObject {
   action: (() => void) | null
-  coords: CoordsBufferLike | DrawRect | DrawRect[] | null
+  coords: CoordsBuffer | null
   state: PoolState | null
 }
 
@@ -171,7 +174,7 @@ function makeDrawObjectAction(action: () => void): DrawObject {
   return { action, coords: null, state: null }
 }
 
-function makeDrawObjectState(state: PoolState, coords: CoordsBufferLike | DrawRect | DrawRect[]): DrawObject {
+function makeDrawObjectState(state: PoolState, coords: CoordsBuffer): DrawObject {
   return { action: null, coords, state }
 }
 
@@ -180,9 +183,14 @@ function hashCombine(h: number, v: number): number {
   return (h * 31 + v) | 0
 }
 
+/** 32-bit safe rect hash to avoid overflow collisions (was: x + y*1e3 + w*1e6 + h*1e9). */
 function rectHash(r: Rect): number {
   if (!r || (r.x == null && r.y == null && r.width == null && r.height == null)) return 0
-  return ((r.x ?? 0) + (r.y ?? 0) * 1000 + (r.width ?? 0) * 1000000 + (r.height ?? 0) * 1000000000) | 0
+  const x = (r.x ?? 0) | 0
+  const y = (r.y ?? 0) | 0
+  const w = (r.width ?? 0) | 0
+  const h = (r.height ?? 0) | 0
+  return ((x * 73856093) ^ (y * 19349663) ^ (w * 83492791) ^ (h * 50331653)) >>> 0
 }
 
 /**
@@ -217,12 +225,12 @@ export class DrawPool {
   m_objects: DrawObject[][] = Array.from({ length: DrawOrder.LAST }, () => [])
   m_objectsFlushed: DrawObject[] = []
   m_objectsDraw: [DrawObject[], DrawObject[]] = [[], []]
-  m_coordsCache: CoordsBufferLike[] = []
-  m_coords: Map<number, CoordsBufferLike | null> = new Map()
+  m_coordsCache: CoordsBuffer[] = []
+  m_coords: Map<number, CoordsBuffer | null> = new Map()
   m_parameters: Map<string, unknown> = new Map()
   m_scaleFactor: number = 1
   m_scale: number = DEFAULT_DISPLAY_DENSITY
-  m_framebuffer: unknown = null
+  m_framebuffer: FrameBuffer | null = null
   m_beforeDraw: (() => void) | null = null
   m_afterDraw: (() => void) | null = null
   m_atlas: unknown = null
@@ -232,12 +240,14 @@ export class DrawPool {
   static create(type: DrawPoolType): DrawPool {
     const pool = new DrawPool()
     if (type === DrawPoolType.MAP || type === DrawPoolType.FOREGROUND) {
-      pool.setFramebuffer({})
-      if (type === DrawPoolType.MAP) {
-        // pool.m_framebuffer->m_useAlphaWriting = false; pool->disableBlend();
+      pool.setFramebuffer({ width: 0, height: 0 })
+      if (type === DrawPoolType.MAP && pool.m_framebuffer) {
+        pool.m_framebuffer.m_useAlphaWriting = false
+        pool.m_framebuffer.disableBlend()
+        pool.m_hashCtrl = new DrawHashController(true)
       } else if (type === DrawPoolType.FOREGROUND) {
         pool.setFPS(10)
-        pool.m_temporaryFramebuffers.push({})
+        pool.m_temporaryFramebuffers.push(new FrameBuffer())
       }
     } else if (type === DrawPoolType.LIGHT) {
       pool.m_hashCtrl = new DrawHashController(true)
@@ -249,27 +259,8 @@ export class DrawPool {
     return pool
   }
 
-  constructor(opts?: { scene?: unknown; w?: number; h?: number; thingsRef?: any; tileGroups?: unknown[] }) {
+  constructor() {
     this.m_hashCtrl = new DrawHashController(false)
-    if (opts) {
-      this.scene = opts.scene ?? null
-      this.w = opts.w ?? 0
-      this.h = opts.h ?? 0
-      this.thingsRef = opts.thingsRef ?? null
-      this.tileGroups = opts.tileGroups ?? []
-      if (this.scene && this.w > 0 && this.h > 0 && !this.tileGroups.length) {
-        const centerX = this.w / 2
-        const centerY = this.h / 2
-        for (let ty = 0; ty < this.h; ty++) {
-          for (let tx = 0; tx < this.w; tx++) {
-            const g = new THREE.Group()
-            g.position.set(tx - centerX, centerY - ty, 0)
-            ;(this.scene as THREE.Scene).add(g)
-            this.tileGroups.push(g)
-          }
-        }
-      }
-    }
   }
 
   setEnable(v: boolean): void {
@@ -285,12 +276,12 @@ export class DrawPool {
     return this.m_type === type
   }
   isValid(): boolean {
-    return !this.m_framebuffer || true
+    return !this.m_framebuffer || this.m_framebuffer.isValid()
   }
   hasFrameBuffer(): boolean {
     return this.m_framebuffer != null
   }
-  getFrameBuffer(): unknown {
+  getFrameBuffer(): FrameBuffer | null {
     return this.m_framebuffer
   }
   canRepaint(): boolean {
@@ -431,11 +422,19 @@ export class DrawPool {
     this.backState()
     this.m_bindedFramebuffers--
   }
-  setFramebuffer(_size: unknown): void {
-    this.m_framebuffer = {}
+  setFramebuffer(size: Size): void {
+    if (!this.m_framebuffer) {
+      this.m_framebuffer = new FrameBuffer()
+      this.m_framebuffer.setAutoResetState(true)
+    }
+    if (sizeValid(size) && this.m_framebuffer.resize(size)) {
+      this.m_framebuffer.prepare({}, {})
+      this.repaint()
+    }
   }
   removeFramebuffer(): void {
     this.m_hashCtrl.reset()
+    this.m_framebuffer?.reset()
     this.m_framebuffer = null
   }
 
@@ -482,7 +481,7 @@ export class DrawPool {
     return refreshDelay > 0 && ((this as any).m_refreshTimer ?? 0) <= -1000
   }
 
-  add(color: Color, texture: unknown, method: DrawMethod, coordsBuffer?: CoordsBufferLike | DrawRect | null): void {
+  add(color: Color, texture: unknown, method: DrawMethod, coordsBuffer?: CoordsBuffer | null): void {
     const hasCoord = coordsBuffer != null
     let textureAtlas: unknown = null
 
@@ -499,49 +498,56 @@ export class DrawPool {
     const list = this.m_objects[this.m_currentDrawOrder]
     const state = this.getState(texture, textureAtlas, color ?? {})
 
-    const coords: CoordsBufferLike | DrawRect | DrawRect[] = coordsBuffer != null
-      ? (coordsBuffer as CoordsBufferLike | DrawRect)
-      : this.addCoordsToRects(method, state, color)
+    let coords: CoordsBuffer
+    if (coordsBuffer != null) {
+      coords = coordsBuffer
+    } else {
+      coords = this.getCoordsBuffer()
+      this.addCoords(coords, method)
+    }
 
     if (!list.length || !list[list.length - 1].coords || !poolStateEquals(list[list.length - 1].state!, state)) {
-      list.push(makeDrawObjectState(state, coords as CoordsBufferLike))
+      list.push(makeDrawObjectState(state, coords))
     } else if (this.m_alwaysGroupDrawings) {
       const key = state.hash
       let buf = this.m_coords.get(key)
       if (!buf) {
-        buf = { rects: [], clear() { this.rects.length = 0 }, append(o) { if (o?.rects) this.rects.push(...o.rects); else if (Array.isArray(o)) this.rects.push(...o); else this.rects.push(o as DrawRect) } }
+        buf = this.getCoordsBuffer()
         list.push(makeDrawObjectState(state, buf))
         this.m_coords.set(key, buf)
       }
-      if (coordsBuffer && typeof (coordsBuffer as CoordsBufferLike).append === 'function')
-        (buf as CoordsBufferLike).append!(coordsBuffer as CoordsBufferLike)
-      else if (Array.isArray(coords)) (buf as CoordsBufferLike).rects.push(...coords)
-      else (buf as CoordsBufferLike).rects.push(coords as DrawRect)
+      buf.append(coords)
+      coords.clear()
+      this.m_coordsCache.push(coords)
     } else {
       const last = list[list.length - 1]
-      if (last.coords && typeof (last.coords as CoordsBufferLike).append === 'function')
-        (last.coords as CoordsBufferLike).append!(coords as CoordsBufferLike)
-      else if (Array.isArray(last.coords)) (last.coords as DrawRect[]).push(...(Array.isArray(coords) ? coords : [coords as DrawRect]))
-      else last.coords = [last.coords as DrawRect, ...(Array.isArray(coords) ? coords : [coords as DrawRect])]
+      if (last.coords) {
+        last.coords.append(coords)
+        coords.clear()
+        this.m_coordsCache.push(coords)
+      } else {
+        last.coords = coords
+      }
     }
 
-    this.resetOnlyOnceParameters()
+    // this.resetOnlyOnceParameters()
   }
 
-  private addCoordsToRects(method: DrawMethod, state: PoolState, color: Color): DrawRect | DrawRect[] {
+  /** OTC: addCoords(CoordsBuffer& buffer, const DrawMethod& method) */
+  addCoords(buffer: CoordsBuffer, method: DrawMethod): void {
     const dest = method.dest ?? {}
-    const r: DrawRect = {
-      tileX: (dest as any).x ?? 0,
-      tileY: (dest as any).y ?? 0,
-      width: (dest as any).width ?? 1,
-      height: (dest as any).height ?? 1,
-      z: method.intValue ?? 0,
-      dx: 0,
-      dy: 0,
-      __compositionMode: state.compositionMode,
-      __multiplyColor: color as any,
+    const src = method.src ?? {}
+    if (method.type === DrawMethodType.BOUNDING_RECT) {
+      buffer.addBoudingRect(dest, method.intValue ?? 0)
+    } else if (method.type === DrawMethodType.RECT) {
+      buffer.addRectWithSrc(dest, src)
+    } else if (method.type === DrawMethodType.TRIANGLE) {
+      if (method.a && method.b && method.c) buffer.addTriangle(method.a, method.b, method.c)
+    } else if (method.type === DrawMethodType.UPSIDEDOWN_RECT) {
+      buffer.addUpsideDownRect(dest, src)
+    } else if (method.type === DrawMethodType.REPEATED_RECT) {
+      buffer.addRepeatedRects(dest, src)
     }
-    return r
   }
 
   updateHash(method: DrawMethod, texture: { hash?: () => number; id?: number } | null, color: Color, hasCoord: boolean): boolean {
@@ -570,7 +576,8 @@ export class DrawPool {
         if (method.dest && (method.dest as any).width != null) poolHash = hashCombine(poolHash, rectHash(method.dest))
         if (method.src && (method.src as any).width != null) poolHash = hashCombine(poolHash, rectHash(method.src))
       }
-      if (!hasCoord && this.m_hashCtrl.isLast(poolHash)) return false
+      // MAP pool: every tile is a distinct draw; skip deduplication so all tiles are added (OTC isLast was dropping tiles).
+      if (!hasCoord && this.m_type !== DrawPoolType.MAP && this.m_hashCtrl.isLast(poolHash)) return false
       this.m_hashCtrl.put(poolHash)
     }
     return true
@@ -597,26 +604,17 @@ export class DrawPool {
     if (this.hasFrameBuffer() && hash > 0 && !this.m_hashCtrl.isLast(hash)) this.m_hashCtrl.put(hash)
   }
 
-  getCoordsBuffer(): CoordsBufferLike {
+  getCoordsBuffer(): CoordsBuffer {
     let buf = this.m_coordsCache.pop()
-    if (!buf) {
-      buf = {
-        rects: [],
-        clear() { this.rects.length = 0 },
-        append(o: CoordsBufferLike | DrawRect[] | null) {
-          if (!o) return
-          if ((o as CoordsBufferLike).rects) this.rects.push(...(o as CoordsBufferLike).rects)
-          else if (Array.isArray(o)) this.rects.push(...o)
-          else this.rects.push(o as DrawRect)
-        },
-      }
-    }
-    buf.rects.length = 0
+    if (!buf) buf = new CoordsBuffer(64)
+    buf.clear()
     return buf
   }
 
   release(): void {
-    if (this.hasFrameBuffer() && !this.m_hashCtrl.wasModified() && !this.canRefresh()) {
+    const hasContent = this.m_objects.some((objs) => objs.length > 0) || this.m_objectsFlushed.length > 0
+    const skipEarlyReturn = this.m_type === DrawPoolType.MAP || hasContent
+    if (this.hasFrameBuffer() && !skipEarlyReturn && !this.m_hashCtrl.wasModified() && !this.canRefresh()) {
       for (const objs of this.m_objects) objs.length = 0
       this.m_objectsFlushed.length = 0
       return
@@ -634,10 +632,9 @@ export class DrawPool {
         const last = this.m_objectsDraw[0][this.m_objectsDraw[0].length - 1]
         const first = objs[0]
         if (poolStateEquals(last.state!, first.state!) && last.coords && first.coords) {
-          const lc = last.coords as CoordsBufferLike
-          const fc = first.coords as CoordsBufferLike
-          if (lc.append && fc.rects) lc.append(fc)
-          else if (Array.isArray(lc)) (last.coords as DrawRect[]).push(...(Array.isArray(fc) ? fc : [fc as DrawRect]))
+          last.coords.append(first.coords)
+          first.coords.clear()
+          this.m_coordsCache.push(first.coords)
           addFirst = false
         }
       }
@@ -658,9 +655,9 @@ export class DrawPool {
         const last = this.m_objectsFlushed[this.m_objectsFlushed.length - 1]
         const first = objs[0]
         if (poolStateEquals(last.state!, first.state!) && last.coords && first.coords) {
-          const lc = last.coords as CoordsBufferLike
-          const fc = first.coords as CoordsBufferLike
-          if (lc.append && fc.rects) lc.append(fc)
+          last.coords.append(first.coords)
+          first.coords.clear()
+          this.m_coordsCache.push(first.coords)
           addFirst = false
         }
       }
@@ -720,12 +717,9 @@ export class DrawPool {
     }
   }
 
-  // —— Project integration: draw target (scene/tileGroups), thingsRef, addTexturedRect(rect), creature info ——
-  scene: unknown = null
-  tileGroups: unknown[] = []
+  // —— Project: optional refs for game logic (calcFirstVisibleFloor, etc.); no draw target. ——
   w: number = 0
   h: number = 0
-  thingsRef: { current: { types: unknown; sprites: unknown } } | null = null
   map: unknown = null
   m_drawingEffectsOnTop: boolean = true
   m_creatureInfoOrigin: { x: number; y: number } | null = null
@@ -752,20 +746,8 @@ export class DrawPool {
     // Stub: framebuffer path not used in this port
   }
 
-  /** Project: start frame (clear state and object arrays; clear tile groups). */
+  /** Project: start frame (clear state and object arrays). No tile groups. */
   beginFrame(): void {
-    for (const g of this.tileGroups as THREE.Group[]) {
-      while (g.children.length) {
-        const c = g.children.pop()
-        if (c && (c as THREE.Mesh).isMesh) {
-          const mesh = c as THREE.Mesh
-          if (mesh.material) {
-            if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose())
-            else (mesh.material as THREE.Material).dispose()
-          }
-        }
-      }
-    }
     this.resetState()
     for (const objs of this.m_objects) objs.length = 0
     this.m_objectsFlushed.length = 0
@@ -774,24 +756,10 @@ export class DrawPool {
     this.m_currentDrawOrder = DrawOrder.FIRST
   }
 
-  /** Project: end frame (flush, release, execute draw list via Painter). */
+  /** Project: end frame (flush, release). Drawing is done by DrawPoolManager.drawObjects/drawPool. */
   endFrame(): void {
     this.flush()
     this.release()
-    const list = this.m_objectsDraw[0]
-    const target = this.scene != null
-      ? { scene: this.scene, tileGroups: this.tileGroups, w: this.w, h: this.h }
-      : null
-    if (target) g_painter.setDrawTarget(target as any)
-    for (const obj of list) {
-      if (obj.action) obj.action()
-      else if (obj.coords && obj.state) {
-        DrawPool.executeState(obj.state, this)
-        const rects = (obj.coords as any).rects ?? (Array.isArray(obj.coords) ? obj.coords : [obj.coords])
-        g_painter.drawCoords(rects.length ? rects : [obj.coords], obj.state)
-      }
-    }
-    if (target) g_painter.setDrawTarget(null)
   }
 
   isDrawingEffectsOnTop(): boolean {
@@ -801,16 +769,25 @@ export class DrawPool {
     this.m_drawingEffectsOnTop = !!v
   }
 
-  /** OTC addTexturedRect – enqueue rect (dest = tileX,tileY, width, height). */
+  /** OTC addTexturedRect – enqueue rect; dest/src in pixels (1 unit = 1 pixel). */
   addTexturedRect(rect: DrawRect & { texture?: unknown; color?: Color }): void {
     if (!rect?.texture) return
+    const TILE_PIXELS = 32
+    const px = rect.pixelX ?? (rect.tileX ?? 0) * TILE_PIXELS
+    const py = rect.pixelY ?? (rect.tileY ?? 0) * TILE_PIXELS
+    const pw = rect.pixelWidth ?? (rect.width ?? 1) * TILE_PIXELS
+    const ph = rect.pixelHeight ?? (rect.height ?? 1) * TILE_PIXELS
+    // add() returns early when texture is set but method.src has no width/height. Use actual texture size for src so UVs normalize to 0-1 (Painter divides by texture image size).
+    const texImg = (rect.texture as { image?: { width?: number; height?: number } })?.image
+    const srcW = texImg?.width ?? pw
+    const srcH = texImg?.height ?? ph
     const method: DrawMethod = {
       type: DrawMethodType.RECT,
-      dest: { x: rect.tileX ?? 0, y: rect.tileY ?? 0, width: rect.width ?? 1, height: rect.height ?? 1 } as Rect,
-      src: {},
+      dest: { x: px, y: py, width: pw, height: ph },
+      src: { x: 0, y: 0, width: srcW, height: srcH },
       intValue: rect.z ?? 0,
     }
-    this.add(rect.color ?? {}, rect.texture, method, rect as DrawRect)
+    this.add(rect.color ?? {}, rect.texture, method, null)
   }
 
   addFilledRect(rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }): void {

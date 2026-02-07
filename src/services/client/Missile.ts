@@ -3,7 +3,7 @@
  * Copyright (c) 2010-2026 OTClient <https://github.com/edubart/otclient>; ported to JS.
  */
 
-import { Thing } from './Thing'
+import { Thing, type DrawDest } from './Thing'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawPoolType, DrawOrder } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
@@ -119,7 +119,7 @@ export class Missile extends Thing {
   getDirection(): DirectionType { return this.m_direction }
 
   /** OTC: void Missile::draw(const Point& dest, bool drawThings, LightView*) */
-  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number): void {
+  override draw(dest: DrawDest, drawThings: boolean, lightView?: import('./LightView').LightView | null): void {
     if (!g_drawPool.isValid()) return
     if (!this.canDraw() || this.isHided()) return
     const tt = this.getThingType()
@@ -140,14 +140,16 @@ export class Missile extends Thing {
       (g_drawPool as any).setShaderProgram?.((globalThis as any).g_shaders?.getShaderById?.(this.m_shaderId), true)
     }
 
-    const dest = {
-      tileX: tileX + offsetX,
-      tileY: tileY + offsetY,
-      drawElevationPx,
-      zOff,
-      tileZ,
+    const baseTileX = (dest.x ?? 0) / TILE_PIXELS
+    const baseTileY = (dest.y ?? 0) / TILE_PIXELS
+    const destObj = {
+      tileX: baseTileX + offsetX,
+      tileY: baseTileY + offsetY,
+      drawElevationPx: dest.drawElevationPx ?? 0,
+      zOff: 0,
+      tileZ: dest.tileZ ?? 0,
     }
-    tt.draw(dest, 0, this.m_numPatternX, this.m_numPatternY, 0, 0, { r: 255, g: 255, b: 255 }, true, null)
+    tt.draw(destObj, 0, this.m_numPatternX, this.m_numPatternY, 0, 0, { r: 255, g: 255, b: 255 }, drawThings, lightView ?? null)
     g_drawPool.resetDrawOrder?.()
   }
 

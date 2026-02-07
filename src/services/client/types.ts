@@ -26,7 +26,7 @@ export interface Light {
 export interface MapView {
     onCameraMove(offset: { x: number, y: number }): void
     onTileUpdate(pos: Position, thing: Thing, operation: string): void
-    requestVisibleTilesCacheUpdate?(): void
+    requestUpdateVisibleTiles?(): void
 }
 
 /** OTC Point – x, y in pixels */

@@ -4,7 +4,7 @@
  * OTC: Item::updatePatterns() – variação baseada na POSIÇÃO do item (m_position = mundo), não na view.
  */
 
-import { Thing } from './Thing'
+import { Thing, type DrawDest } from './Thing'
 import { ThingType } from '../things/thingType'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import { g_map } from './ClientMap'
@@ -120,13 +120,19 @@ export class Item extends Thing {
 
   /**
    * OTC: Item::draw(dest, …) → getThingType()->draw(dest, 0, m_numPatternX, m_numPatternY, m_numPatternZ, …).
-   * Uses g_drawPool (DrawPoolManager); no pipeline param, like OTClient.
    */
-  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number) {
+  override draw(dest: DrawDest, drawThings: boolean, lightView?: import('./LightView').LightView | null) {
     const tt = this.getThingType()
     if (!tt) return
-    const dest = { tileX, tileY, drawElevationPx, zOff, tileZ }
+    const TILE_PIXELS = 32
+    const destObj = {
+      tileX: (dest.x ?? 0) / TILE_PIXELS,
+      tileY: (dest.y ?? 0) / TILE_PIXELS,
+      drawElevationPx: dest.drawElevationPx ?? 0,
+      zOff: 0,
+      tileZ: dest.tileZ ?? 0,
+    }
     const animationPhase = this.calculateAnimationPhase(true)
-    tt.draw(dest, 0, this.m_numPatternX, this.m_numPatternY, this.m_numPatternZ, animationPhase, null, true, null)
+    tt.draw(destObj, 0, this.m_numPatternX, this.m_numPatternY, this.m_numPatternZ, animationPhase, null, drawThings, lightView ?? null)
   }
 }

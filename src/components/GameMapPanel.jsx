@@ -1,15 +1,18 @@
 // ui/components/GameMapPanel.jsx
 import { useEffect, useRef } from 'react'
-import { MapView } from '../services/client/MapView'
-import { getThings, loadThings } from '../services/protocol/things'
+import { UIMap } from '../services/client/UIMap'
+import { DrawPoolType } from '../services/graphics/DrawPool'
+import { loadThings } from '../services/protocol/things'
 import { g_map } from '../services/client/ClientMap'
+import { g_drawPool } from '../services/graphics/DrawPoolManager'
 import { useWalkController } from '../modules/game_walk'
+import { g_graphics } from '../services/graphics/Graphics'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 
 export default function GameMapPanel() {
   const hostRef = useRef(null)
-  const mapViewRef = useRef(null)
+  const uiMapRef = useRef(null)
 
   // Initialize walk controller (handles WASD, arrows, numpad)
   useWalkController()
@@ -18,38 +21,49 @@ export default function GameMapPanel() {
     const host = hostRef.current
     if (!host) return
 
-    const thingsRef = { current: getThings() }
+    // Ensure draw pools are initialized (idempotent; also called at module level and in App.jsx)
+    g_drawPool.init(32)
 
-    // MapView igual ao OTClient: m_drawDimension 18x14, aware range left=8 right=9 top=6 bottom=7
-    mapViewRef.current = new MapView({ host, w: 18, h: 14, thingsRef })
-    g_map.addMapView(mapViewRef.current)
-    
-    if (g_map.center?.x != null) {
-      mapViewRef.current.requestVisibleTilesCacheUpdate()
+    // UIMap owns MapView and registers with g_map (OTC: m_drawDimension 18x14)
+    uiMapRef.current = new UIMap(host, 18, 14)
+
+    const drawAllPanesAndRender = () => {
+      if (!uiMapRef.current || !host) return
+      const w = host.clientWidth ?? 0
+      const h = host.clientHeight ?? 0
+      if (w <= 0 || h <= 0) return
+      g_graphics.setViewport(w, h)
+      uiMapRef.current.draw(DrawPoolType.MAP)
+      uiMapRef.current.draw(DrawPoolType.LIGHT)
+      uiMapRef.current.draw(DrawPoolType.CREATURE_INFORMATION)
+      uiMapRef.current.draw(DrawPoolType.FOREGROUND_MAP)
+      g_drawPool.draw()
     }
 
-    loadThings(860).then((t) => {
-      thingsRef.current = t
-      if (mapViewRef.current && g_map.center?.x != null) {
-        mapViewRef.current.requestVisibleTilesCacheUpdate()
-        mapViewRef.current.draw()
+    if (g_map.center?.x != null) {
+      drawAllPanesAndRender()
+    }
+
+    loadThings(860).then(() => {
+      if (uiMapRef.current && g_map.center?.x != null) {
+        drawAllPanesAndRender()
       }
     })
 
     const onMap = () => {
-      mapViewRef.current?.requestVisibleTilesCacheUpdate()
-      mapViewRef.current?.draw()
+      uiMapRef.current?.getMapView()?.requestUpdateVisibleTiles()
+      drawAllPanesAndRender()
     }
 
     const onMapMove = () => {
-      if (!g_map?.center || !mapViewRef.current) return
-      mapViewRef.current.requestVisibleTilesCacheUpdate()
+      drawAllPanesAndRender()
     }
 
-    // ResizeObserver para atualizar o fit quando o container mudar de tamanho
+    // ResizeObserver: atualiza viewport e resize do MapView para o próximo draw
     const resizeObserver = new ResizeObserver(() => {
-      if (mapViewRef.current && host) {
-        mapViewRef.current.resize(host)
+      if (uiMapRef.current && host && host.clientWidth > 0 && host.clientHeight > 0) {
+        g_graphics.setViewport(host.clientWidth, host.clientHeight)
+        uiMapRef.current.getMapView().resize(host)
       }
     })
     resizeObserver.observe(host)
@@ -59,11 +73,11 @@ export default function GameMapPanel() {
 
     let raf = 0
     const loop = () => {
-      if (mapViewRef.current) {
-        mapViewRef.current.draw()
-        mapViewRef.current.render()
-      }
       raf = requestAnimationFrame(loop)
+      const hasCenter = g_map.center?.x != null
+      if (uiMapRef.current && hasCenter) {
+        drawAllPanesAndRender()
+      }
     }
     loop()
 
@@ -72,9 +86,8 @@ export default function GameMapPanel() {
       resizeObserver.disconnect()
       window.removeEventListener('ot:map', onMap)
       window.removeEventListener('ot:mapMove', onMapMove)
-      g_map.removeMapView(mapViewRef.current)
-      mapViewRef.current?.dispose()
-      mapViewRef.current = null
+      uiMapRef.current?.dispose()
+      uiMapRef.current = null
       host.innerHTML = ''
     }
   }, [])

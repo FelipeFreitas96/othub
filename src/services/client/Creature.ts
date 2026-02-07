@@ -13,7 +13,7 @@ import { isFeatureEnabled, getClientVersion, FEATURES } from '../protocol/featur
 import { Outfit } from './types'
 import type { MapPosInfo, Point, Rect } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
-import { Thing } from './Thing'
+import { Thing, type DrawDest } from './Thing'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawOrder } from '../graphics/DrawPool'
 import { ThingType } from '../things/thingType'
@@ -903,7 +903,7 @@ export class Creature extends Thing {
 
   /** OTC: equivalente ao creature type (outfit). Retorna o ThingType do lookType. */
   getThingType(): ThingType | null {
-    const types = g_drawPool.thingsRef?.current?.types ?? getThings()?.types
+    const types = getThings()?.types
     const lookType = this.m_outfit?.lookType ?? 0
     return lookType && types ? types.getCreature(lookType) : null
   }
@@ -929,7 +929,7 @@ export class Creature extends Thing {
   getMountThingType(): ThingType | null {
     const mountId = (this.m_outfit as any)?.lookTypeEx
     if (!mountId) return null
-    const types = g_drawPool.thingsRef?.current?.types ?? getThings()?.types
+    const types = getThings()?.types
     return types?.getCreature?.(mountId) ?? null
   }
 
@@ -941,26 +941,26 @@ export class Creature extends Thing {
   /**
    * OTC: Creature::draw(dest, drawThings, lightView) – calls internalDraw(_dest). drawFlags passed for marked/highlight.
    */
-  override draw(tileX: number, tileY: number, drawElevationPx: number, zOff: number, tileZ: number, pixelOffsetX = 0, pixelOffsetY = 0, isWalkDraw = false, drawFlags = 0) {
+  override draw(dest: DrawDest, drawThings: boolean, lightView?: import('./LightView').LightView | null) {
     if (!g_drawPool.isValid()) return
     const ct = this.getThingType()
     if (!ct) return
-    const things = g_drawPool.thingsRef?.current
-    if (!things?.types) return
-    if (this.m_walking && !isWalkDraw) return
+    if (this.m_walking && !(dest.isWalkDraw ?? false)) return
 
-    const dest = {
-      tileX,
-      tileY,
-      drawElevationPx,
-      zOff,
-      tileZ,
-      pixelOffsetX,
-      pixelOffsetY,
+    const TILE_PIXELS = 32
+    const internalDest = {
+      tileX: (dest.x ?? 0) / TILE_PIXELS,
+      tileY: (dest.y ?? 0) / TILE_PIXELS,
+      drawElevationPx: dest.drawElevationPx ?? 0,
+      zOff: 0,
+      tileZ: dest.tileZ ?? 0,
+      pixelOffsetX: dest.pixelOffsetX ?? 0,
+      pixelOffsetY: dest.pixelOffsetY ?? 0,
       frameGroupIndex: ct.getFrameGroupForDraw(this.m_walking),
     }
+
     const color = Creature.COLOR_WHITE
-    this.internalDraw(dest, color)
+    this.internalDraw(internalDest, color)
     this.m_footStepDrawn = true
   }
 
@@ -996,8 +996,6 @@ export class Creature extends Thing {
       const animationPhase = this.getCurrentAnimationPhase(false)
       const ct = this.getThingType()
       if (!ct) return
-      const things = g_drawPool.thingsRef?.current
-      if (!things?.types) return
       const dir = this.m_walking ? this.m_direction : (this.m_direction ?? 0)
       const px = ct.patternX ?? ct.m_numPatternX ?? 1
       const xPattern = px >= 4 ? (dir & 3) : 0

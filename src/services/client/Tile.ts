@@ -17,6 +17,8 @@ import type { MapPosInfo, Point } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import type { LightView } from './LightView'
+import type { AwareRange } from './StaticData'
+import { getThings } from '../protocol/things'
 
 export const MAX_THINGS = 10
 export const TILE_PIXELS = 32
@@ -400,33 +402,154 @@ export class Tile {
     return this.m_things.some((t) => (t as any)?.hasLight?.())
   }
 
+  /** OTC: Tile::hasWideThings() – any thing with width > 1. */
+  hasWideThings(): boolean {
+    return this.m_things.some((t) => (t.getWidth?.() ?? 1) > 1)
+  }
+
+  /** OTC: Tile::hasWideThings2() – used in canRender; same as hasWideThings for port. */
+  hasWideThings2(): boolean {
+    return this.hasWideThings()
+  }
+
+  /** OTC: Tile::hasTallThings() – any thing with height > 1. */
+  hasTallThings(): boolean {
+    return this.m_things.some((t) => (t.getHeight?.() ?? 1) > 1)
+  }
+
+  /** OTC: Tile::hasTallThings2() – used in canRender; same as hasTallThings for port. */
+  hasTallThings2(): boolean {
+    return this.hasTallThings()
+  }
+
+  /** OTC: Tile::hasDisplacement() – any thing type with displacement. */
+  hasDisplacement(): boolean {
+    return this.m_things.some((t) => (t.getThingType?.() as any)?.hasDisplacement?.())
+  }
+
+  /** OTC: Tile::hasThingWithElevation() – any thing with elevation. */
+  hasThingWithElevation(): boolean {
+    return this.m_things.some((t) => (t as any)?.hasElevation?.())
+  }
+
   /**
-   * OTC Tile::isCompletelyCovered(firstFloor, resetCache) — cache por firstFloor (idChecked = 1<<firstFloor, idState = 1<<(firstFloor+MAP_MAX_Z)).
-   * Early outs (z==0, z==firstFloor, hasCreatures, hasLight); depois delega para map.isCompletelyCovered e cacheia o resultado.
+   * OTC: bool Tile::canRender(uint32_t& flags, const Position& cameraPosition, const AwareRange viewPort)
+   * Check for non-visible tiles on the screen and ignore them; may clear DrawThings/DrawLights/DrawManaBar/DrawNames/DrawBars.
+   * Returns true if flags > 0 (tile still has something to draw).
    */
-  isCompletelyCovered(firstFloor: number, resetCache: boolean, map: any, types: ThingTypeManager): boolean {
+  canRender(flags: number, cameraPosition: Position, viewPort: AwareRange): boolean {
+    const flagsRef = { flags };
+    const dz = this.m_position.z - cameraPosition.z
+    const checkPos = this.m_position.translated(dz, dz)
+
+    let draw = true
+
+    if (
+      cameraPosition.x - checkPos.x >= viewPort.left ||
+      (checkPos.x - cameraPosition.x === viewPort.right &&
+        !this.hasWideThings() &&
+        !this.hasDisplacement() &&
+        !this.hasThingWithElevation() &&
+        this.m_walkingCreatures.length === 0)
+    ) {
+      draw = false
+    } else if (
+      cameraPosition.y - checkPos.y >= viewPort.top ||
+      (checkPos.y - cameraPosition.y === viewPort.bottom &&
+        !this.hasTallThings() &&
+        !this.hasWideThings2() &&
+        !this.hasDisplacement() &&
+        !this.hasThingWithElevation() &&
+        this.m_walkingCreatures.length === 0)
+    ) {
+      draw = false
+    } else if (
+      ((checkPos.x - cameraPosition.x > viewPort.right &&
+        (!this.hasWideThings() || !this.hasDisplacement() || !this.hasThingWithElevation())) ||
+        checkPos.y - cameraPosition.y > viewPort.bottom) &&
+      !this.hasTallThings2()
+    ) {
+      draw = false
+    }
+
+    if (!draw) {
+      flagsRef.flags &= ~DrawFlags.DrawThings
+      if (!this.hasLight()) flagsRef.flags &= ~DrawFlags.DrawLights
+      if (!this.hasCreatures()) flagsRef.flags &= ~(DrawFlags.DrawManaBar | DrawFlags.DrawNames | DrawFlags.DrawBars)
+    }
+
+    return flagsRef.flags > 0
+  }
+
+  /** OTC Tile::limitsFloorsView(isLookPossible) – tile blocks view to floors above. Stub: false. */
+  limitsFloorsView(_isLookPossible?: boolean): boolean {
+    return false
+  }
+
+  /** OTC Tile::canShade() – tile contributes to light shades. Stub: false. */
+  canShade(): boolean {
+    return false
+  }
+
+  /** OTC Tile::onAddInMapView() – called when tile is added to visible cache. No-op. */
+  onAddInMapView(): void {}
+
+  /** OTC Tile::isLoading() – true if any thing on the tile is still loading. Stub: false. */
+  isLoading(): boolean {
+    return this.m_things.some((t) => (t as any)?.isLoading?.() === true) ?? false
+  }
+
+  /**
+   * OTC Tile::isCompletelyCovered(uint8_t firstFloor, bool resetCache) – tile.cpp L685-715.
+   * Early outs: z==0, z==firstFloor, hasCreatures, !m_walkingCreatures.empty(), hasLight. Then g_map.isCompletelyCovered(m_position, isLoading, firstFloor); cache result; if isLoading clear and return false.
+   */
+  isCompletelyCovered(firstFloor: number, resetCache: boolean): boolean {
     if (this.z === 0 || this.z === firstFloor) return false
-    if (this.hasCreatures?.() || this.hasLight?.()) return false
-    if (!map?.isCompletelyCovered) return false
+    if (resetCache) {
+      this.m_isCompletelyCovered = 0
+      this.m_isCovered = 0
+    }
+    if (this.hasCreatures?.() || (this.m_walkingCreatures?.length ?? 0) > 0 || this.hasLight?.()) return false
 
     const idChecked = 1 << firstFloor
     const idState = 1 << (firstFloor + MAP_MAX_Z)
-
-    if (resetCache) {
-      this.m_isCompletelyCovered &= ~(idChecked | idState)
-      this.m_isCovered &= ~(idChecked | idState)
-    }
-
     if ((this.m_isCompletelyCovered & idChecked) === 0) {
       this.m_isCompletelyCovered |= idChecked
-      if (map.isCompletelyCovered(this, firstFloor, types)) {
+      const isLoadingRef = { isLoading: false }
+      if (g_map.isCompletelyCovered(this.getPosition(), isLoadingRef, firstFloor, getThings()?.types)) {
         this.m_isCompletelyCovered |= idState
         this.m_isCovered |= idChecked
         this.m_isCovered |= idState
       }
+      if (isLoadingRef.isLoading) {
+        this.m_isCompletelyCovered &= ~idState
+        this.m_isCovered &= ~idChecked
+        this.m_isCovered &= ~idState
+        return false
+      }
     }
-
     return (this.m_isCompletelyCovered & idState) === idState
+  }
+
+  /**
+   * OTC Tile::isCovered(int8_t firstFloor) – tile.cpp L718-738.
+   * Cache by firstFloor; delegate to g_map.isCovered(m_position, isLoading, firstFloor); if isLoading clear and return false.
+   */
+  isCovered(firstFloor: number): boolean {
+    if (this.z === 0 || this.z === firstFloor) return false
+    const idChecked = 1 << firstFloor
+    const idState = 1 << (firstFloor + MAP_MAX_Z)
+    if ((this.m_isCovered & idChecked) === 0) {
+      this.m_isCovered |= idChecked
+      const isLoadingRef = { isLoading: false }
+      if (g_map.isCovered(this.getPosition(), isLoadingRef, firstFloor)) this.m_isCovered |= idState
+      if (isLoadingRef.isLoading) {
+        this.m_isCovered &= ~idChecked
+        this.m_isCovered &= ~idState
+        return false
+      }
+    }
+    return (this.m_isCovered & idState) === idState
   }
 
   /**
@@ -478,8 +601,9 @@ export class Tile {
       else if (thing?.isSingleGroundBorder?.()) g_drawPool.setDrawOrder(DrawOrder.SECOND)
       else if (thing?.isEffect?.() && g_drawPool.isDrawingEffectsOnTop()) g_drawPool.setDrawOrder(DrawOrder.FOURTH)
       else g_drawPool.setDrawOrder(DrawOrder.THIRD)
-      
-      thing.draw(viewX, viewY, elev, 0, self.z)
+
+      const drawDest = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS, drawElevationPx: elev, tileZ: self.z }
+      thing.draw(drawDest, !!(drawFlags & DrawFlags.DrawThings), lightView ?? undefined)
       
       if (state) self.updateElevation(thing, state)
       g_drawPool.resetDrawOrder()
@@ -556,7 +680,17 @@ export class Tile {
           }
         }
 
-        creature.draw(viewX, viewY, state.drawElevationPx, 0, self.z, pixelOffsetX, pixelOffsetY, true, state.drawFlags ?? 0)
+        const creatureDest = {
+          x: viewX * spriteSize,
+          y: viewY * spriteSize,
+          drawElevationPx: state.drawElevationPx,
+          tileZ: self.z,
+          pixelOffsetX,
+          pixelOffsetY,
+          isWalkDraw: true,
+          drawFlags: state.drawFlags ?? 0,
+        }
+        creature.draw(creatureDest, true, lightView ?? undefined)
         if (g_drawPool.isValid() && (self as any).m_drawTopAndCreature && creature.drawInformation) {
           const dest: Point = { x: viewX * spriteSize, y: viewY * spriteSize }
           const mapRect: MapPosInfo = {
@@ -591,7 +725,8 @@ export class Tile {
         const self = this
         steps.push(() => {
           g_drawPool.setDrawOrder(DrawOrder.FOURTH)
-          effect.draw?.(viewX, viewY, 0, 0, self.z)
+          const effectDest = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS, drawElevationPx: 0, tileZ: self.z }
+          effect.draw(effectDest, true, state.lightView ?? undefined)
           g_drawPool.resetDrawOrder()
         })
       }
@@ -625,12 +760,11 @@ export class Tile {
   /**
    * OTC: Tile::draw(dest, flags, lightView) – m_lastDrawDest = dest; depois ground, common, drawCreature, drawTop.
    */
-  /** OTC: Tile::draw(dest, scaleFactor, drawFlags, lightView) – luz é adicionada no draw de cada thing (Creature::draw, etc.). */
-  draw(drawFlags: number = 0, viewX: number, viewY: number, lightView?: LightView | null) {
+  /** OTC: Tile::draw(dest, scaleFactor, drawFlags, lightView) – dest = transformPositionTo2D(tile->getPosition()). */
+  draw(dest: Point, drawFlags: number = 0, lightView?: LightView | null) {
     if (!g_drawPool.isValid()) return
-    const things = g_drawPool.thingsRef?.current
-    if (!things) return
-
+    const viewX = dest.x / TILE_PIXELS
+    const viewY = dest.y / TILE_PIXELS
     this.m_lastDrawDest = { x: viewX, y: viewY }
     const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY, lightView: lightView ?? null, drawFlags }
     const steps: Function[] = []
