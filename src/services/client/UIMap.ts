@@ -110,7 +110,8 @@ export class UIMap {
     } else if (drawPane === DrawPoolType.CREATURE_INFORMATION) {
       g_drawPool.preDraw(drawPane, () => this.m_mapView.drawCreatureInformation())
     } else if (drawPane === DrawPoolType.FOREGROUND_MAP) {
-      g_drawPool.preDraw(drawPane, () => this.m_mapView.drawForeground(this.m_mapviewRect))
+      // Use current view rect from MapView. m_mapviewRect can be stale/small in this port.
+      g_drawPool.preDraw(drawPane, () => this.m_mapView.drawForeground(rect))
     }
   }
 

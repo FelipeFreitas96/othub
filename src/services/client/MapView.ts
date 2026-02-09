@@ -23,6 +23,7 @@ import { Creature } from './Creature'
 import { Tile } from './Tile'
 import type { MapPosInfo, Point } from './types'
 import { g_gameConfig } from './gameConfig'
+import { MessageModeEnum } from './Const'
 
 const TILE_PIXELS = 32
 // OTClient: drawDimension = visibleDimension + Size(3, 3)
@@ -116,6 +117,8 @@ export class MapView {
   m_mousePosition: Position | null = null
   /** OTC: m_lastHighlightTile. */
   m_lastHighlightTile: Tile | null = null
+  /** OTC: m_foregroundTiles – tiles with foreground texts/effects. */
+  m_foregroundTiles: Tile[] = []
   /** Project: backend WebGL (não existe no OTC; lá é platform/window). Criado lazy em ensureBackend(). */
   private _renderer: THREE.WebGLRenderer | null = null
   private _camera: THREE.OrthographicCamera | null = null
@@ -817,9 +820,67 @@ export class MapView {
     }
   }
 
-  /** OTC mapview.cpp L240-284: drawForeground(rect) – static texts, animated texts, foreground tiles. Stub. */
-  drawForeground(_rect: { x: number, y: number, width: number, height: number }): void {
-    // TODO: staticTexts, animatedTexts, m_foregroundTiles
+  /** OTC mapview.cpp L240-284: drawForeground(rect) – static texts, animated texts, foreground tiles. */
+  drawForeground(rect: { x: number, y: number, width: number, height: number }): void {
+    const camera = this.m_posInfo.camera
+    if (!camera?.isValid?.()) return
+
+    for (const staticText of g_map.getStaticTexts()) {
+      if (staticText.getMessageMode() === MessageModeEnum.MessageNone) continue
+
+      const pos = staticText.getPosition()
+      if (pos.z !== camera.z && staticText.getMessageMode() === MessageModeEnum.MessageNone) continue
+
+      const p = this.transformPositionTo2D(pos)
+      let px = p.x - (this.m_posInfo.drawOffset.x ?? 0)
+      let py = p.y - (this.m_posInfo.drawOffset.y ?? 0)
+
+      px *= this.m_posInfo.horizontalStretchFactor
+      py *= this.m_posInfo.verticalStretchFactor
+      px += rect.x
+      py += rect.y
+
+      staticText.drawText({ x: px, y: py }, rect)
+    }
+
+    for (const animatedText of g_map.getAnimatedTexts()) {
+      const pos = animatedText.getPosition()
+      if (!pos || pos.z !== camera.z) continue
+
+      const p = this.transformPositionTo2D(pos)
+      let px = p.x - (this.m_posInfo.drawOffset.x ?? 0)
+      let py = p.y - (this.m_posInfo.drawOffset.y ?? 0)
+
+      px *= this.m_posInfo.horizontalStretchFactor
+      py *= this.m_posInfo.verticalStretchFactor
+      px += rect.x
+      py += rect.y
+
+      animatedText.drawText({ x: px, y: py }, rect)
+    }
+
+    for (const tile of this.m_foregroundTiles) {
+      const dest = this.transformPositionTo2D(tile.getPosition())
+      let px = dest.x - (this.m_posInfo.drawOffset.x ?? 0)
+      let py = dest.y - (this.m_posInfo.drawOffset.y ?? 0)
+      px *= this.m_posInfo.horizontalStretchFactor
+      py *= this.m_posInfo.verticalStretchFactor
+      px += rect.x
+      py += rect.y + 5
+      ;(tile as any).drawTexts?.({ x: px, y: py })
+    }
+  }
+
+  /** OTC: addForegroundTile(tile). */
+  addForegroundTile(tile: Tile): void {
+    if (!tile) return
+    if (!this.m_foregroundTiles.includes(tile)) this.m_foregroundTiles.push(tile)
+  }
+
+  /** OTC: removeForegroundTile(tile). */
+  removeForegroundTile(tile: Tile): void {
+    const idx = this.m_foregroundTiles.indexOf(tile)
+    if (idx >= 0) this.m_foregroundTiles.splice(idx, 1)
   }
 
   /** OTC mapview.cpp L59-102: registerEvents() – pool onBeforeDraw/onAfterDraw (shader, opacity). No-op em port. */

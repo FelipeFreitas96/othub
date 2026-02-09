@@ -17,6 +17,8 @@ import { Position, PositionLike, ensurePosition } from './Position'
 import { Item } from './Item'
 import { Missile } from './Missile'
 import { AnimatedText } from './AnimatedText'
+import { StaticText } from './StaticText'
+import { MessageModeEnum } from './Const'
 
 const SEA_FLOOR = 7
 const MAX_Z = 15
@@ -53,6 +55,8 @@ export class ClientMap {
   m_floors: Record<number, { missiles: Thing[] }> = {}
   /** OTC: m_animatedTexts – map.h L248. */
   m_animatedTexts: AnimatedText[] = []
+  /** OTC: m_staticTexts – map.h L249. */
+  m_staticTexts: StaticText[] = []
 
   constructor() {
     this.m_centralPosition = new Position(0, 0, SEA_FLOOR)
@@ -296,6 +300,13 @@ export class ClientMap {
       this.m_tiles.delete(key)
     }
     this.notificateTileUpdate(pos, null, 'clean')
+
+    // OTC: remove MessageNone static texts on cleaned tile.
+    this.m_staticTexts = this.m_staticTexts.filter((staticText) => {
+      const sp = staticText.getPosition()
+      const samePos = sp.x === pos.x && sp.y === pos.y && sp.z === pos.z
+      return !(samePos && staticText.getMessageMode() === MessageModeEnum.MessageNone)
+    })
   }
 
   /** OTC: Map::notificateCameraMove(const Point& offset) – map.cpp L105-113. */
@@ -419,6 +430,46 @@ export class ClientMap {
     }
 
     return false
+  }
+
+  /** OTC: void Map::addStaticText(const StaticTextPtr& txt, const Position& pos) – map.cpp L203. */
+  addStaticText(txt: StaticText, pos: PositionLike): void {
+    if (!txt) return
+    const position = ensurePosition(pos)
+
+    g_dispatcher.addEvent(() => {
+      for (const other of this.m_staticTexts) {
+        const op = other.getPosition()
+        if (op.x !== position.x || op.y !== position.y || op.z !== position.z) continue
+        if (other.addMessage(txt.getName(), txt.getMessageMode(), txt.getFirstMessage())) return
+      }
+
+      txt.setPosition(position)
+      this.m_staticTexts.push(txt)
+    })
+  }
+
+  /** OTC: bool Map::removeStaticText(const StaticTextPtr& txt) – map.cpp L299. */
+  removeStaticText(txt: StaticText): boolean {
+    const i = this.m_staticTexts.indexOf(txt)
+    if (i === -1) return false
+    this.m_staticTexts.splice(i, 1)
+    return true
+  }
+
+  /** OTC: StaticTextPtr Map::getStaticText(const Position& pos) const – map.cpp L353. */
+  getStaticText(pos: PositionLike): StaticText | null {
+    const position = ensurePosition(pos)
+    for (const staticText of this.m_staticTexts) {
+      const sp = staticText.getPosition()
+      if (sp.x === position.x && sp.y === position.y && sp.z === position.z) return staticText
+    }
+    return null
+  }
+
+  /** OTC: getStaticTexts() – map.h L216. */
+  getStaticTexts(): StaticText[] {
+    return this.m_staticTexts
   }
 
   /** OTC: void Map::addAnimatedText(const AnimatedTextPtr& txt, const Position& pos) – map.cpp L220. */
@@ -588,6 +639,8 @@ export class ClientMap {
       if (tile?.m_walkingCreatures?.length) tile.m_walkingCreatures = []
     }
     this.m_knownCreatures.clear()
+    this.m_animatedTexts = []
+    this.m_staticTexts = []
   }
 
   removeUnawareThings() {
@@ -602,6 +655,12 @@ export class ClientMap {
       }
       if (tile.m_things.length === 0) this.cleanTile(tile.m_position)
     }
+
+    // OTC: remove MessageNone static texts from unaware tiles.
+    this.m_staticTexts = this.m_staticTexts.filter((staticText) => {
+      if (staticText.getMessageMode() !== MessageModeEnum.MessageNone) return true
+      return this.isAwareOfPosition(staticText.getPosition())
+    })
   }
 
   /** OTC: m_mapKnown – true após primeiro parseMapDescription (0x64). */

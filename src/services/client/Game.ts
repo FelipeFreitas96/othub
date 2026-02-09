@@ -3,9 +3,10 @@ import { ProtocolGame } from './ProtocolGame'
 import { loadThings } from '../protocol/things'
 import { g_map } from './ClientMap'
 import { getProtocolInfo } from '../protocol/protocolInfo'
-import { GameEventsEnum } from './Const'
+import { GameEventsEnum, MessageModeEnum } from './Const'
 import { g_player, LocalPlayer } from './LocalPlayer'
-import { Direction, DirectionType } from './Position'
+import { Direction, DirectionType, Position } from './Position'
+import { StaticText } from './StaticText'
 
 let clientVersion = 860
 let serverBeat = 0
@@ -36,12 +37,25 @@ export class Game {
     this.m_clientVersion = 860
   }
 
+  private emit(event: string, detail?: any) {
+    if (typeof window === 'undefined') return
+    if (typeof detail === 'undefined') {
+      window.dispatchEvent(new CustomEvent(`g_game:${event}`))
+      return
+    }
+    window.dispatchEvent(new CustomEvent(`g_game:${event}`, { detail }))
+  }
+
   getProtocolGame() {
     return this.m_protocolGame
   }
 
   getClientVersion() {
     return this.m_clientVersion
+  }
+
+  getCharacterName() {
+    return this.m_characterName
   }
 
   /** OTC: formatCreatureName(string) – used in getCreature when reading creature name. */
@@ -125,6 +139,81 @@ export class Game {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('g_game:containerRemoveItem', { detail: { containerId: _containerId, slot: _slot, lastItem: _lastItem } }))
     }
+  }
+
+  /** OTC: Game::processTextMessage */
+  processTextMessage(mode: number, text: string, extra?: any) {
+    this.emit('onTextMessage', { mode, text: text ?? '', ...(extra ?? {}) })
+  }
+
+  /** OTC: Game::processTalk */
+  processTalk(name: string, level: number, mode: number, text: string, channelId: number, pos: any) {
+    const safeText = text ?? ''
+    this.tryAddMapStaticText(name, mode, safeText, pos)
+    this.emit('onTalk', { name, level, mode, text: safeText, channelId: channelId ?? 0, pos })
+  }
+
+  private tryAddMapStaticText(name: string, mode: number, text: string, pos: any): void {
+    if (!text || !this.isStaticTextMode(mode)) return
+    const talkPos = this.normalizeTalkPosition(pos)
+    if (!talkPos) return
+
+    const staticText = new StaticText()
+    if (!staticText.addMessage(name ?? '', mode, text)) return
+    g_map.addStaticText(staticText, talkPos)
+  }
+
+  private isStaticTextMode(mode: number): boolean {
+    switch (mode) {
+      case MessageModeEnum.MessageSay:
+      case MessageModeEnum.MessageWhisper:
+      case MessageModeEnum.MessageYell:
+      case MessageModeEnum.MessageSpell:
+      case MessageModeEnum.MessageMonsterSay:
+      case MessageModeEnum.MessageMonsterYell:
+      case MessageModeEnum.MessageNpcFrom:
+      case MessageModeEnum.MessageBarkLow:
+      case MessageModeEnum.MessageBarkLoud:
+      case MessageModeEnum.MessageNpcFromStartBlock:
+        return true
+      default:
+        return false
+    }
+  }
+
+  private normalizeTalkPosition(pos: any): Position | null {
+    if (!pos) return null
+    const x = Number(pos.x)
+    const y = Number(pos.y)
+    const z = Number(pos.z)
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null
+    const out = pos instanceof Position ? pos.clone() : new Position(x, y, z)
+    return out.isValid() ? out : null
+  }
+
+  /** OTC: Game::processChannelList */
+  processChannelList(channelList: Array<[number, string]>) {
+    this.emit('onChannelList', { channelList })
+  }
+
+  /** OTC: Game::processOpenChannel */
+  processOpenChannel(channelId: number, channelName: string) {
+    this.emit('onOpenChannel', { channelId, channelName })
+  }
+
+  /** OTC: Game::processOpenPrivateChannel */
+  processOpenPrivateChannel(name: string) {
+    this.emit('onOpenPrivateChannel', { name })
+  }
+
+  /** OTC: Game::processOpenOwnPrivateChannel */
+  processOpenOwnPrivateChannel(channelId: number, channelName: string) {
+    this.emit('onOpenOwnPrivateChannel', { channelId, channelName })
+  }
+
+  /** OTC: Game::processCloseChannel */
+  processCloseChannel(channelId: number) {
+    this.emit('onCloseChannel', { channelId })
   }
 
   async loginWorld(charInfo: CharacterInfo) {
@@ -266,6 +355,52 @@ export class Game {
   stop() {
     if (!this.canPerformGameAction() || !this.m_protocolGame) return
     this.m_protocolGame.sendStop()
+  }
+
+  // OTC: Game::talk
+  talk(message: string) {
+    if (!this.canPerformGameAction()) return
+    if (!message || !message.trim()) return
+    this.talkChannel(MessageModeEnum.MessageSay, 0, message)
+  }
+
+  // OTC: Game::talkChannel
+  talkChannel(mode: number, channelId: number, message: string) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (!message || !message.trim()) return
+    this.m_protocolGame.sendTalk(mode, channelId ?? 0, '', message)
+  }
+
+  // OTC: Game::talkPrivate
+  talkPrivate(mode: number, receiver: string, message: string) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (!receiver || !receiver.trim() || !message || !message.trim()) return
+    this.m_protocolGame.sendTalk(mode, 0, receiver, message)
+  }
+
+  // OTC: Game::openPrivateChannel
+  openPrivateChannel(receiver: string) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (!receiver || !receiver.trim()) return
+    this.m_protocolGame.sendOpenPrivateChannel(receiver)
+  }
+
+  // OTC: Game::requestChannels
+  requestChannels() {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    this.m_protocolGame.sendRequestChannels()
+  }
+
+  // OTC: Game::joinChannel
+  joinChannel(channelId: number) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    this.m_protocolGame.sendJoinChannel(channelId)
+  }
+
+  // OTC: Game::leaveChannel
+  leaveChannel(channelId: number) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    this.m_protocolGame.sendLeaveChannel(channelId)
   }
 }
 

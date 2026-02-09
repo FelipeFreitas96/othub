@@ -9,6 +9,7 @@ import { OutputMessage } from '../protocol/outputMessage'
 import { InputMessage } from '../protocol/inputMessage'
 import { g_game, getGameClientVersion } from './Game'
 import { ProtocolGameParse, GAME_CLIENT_OPCODES, ParseContext } from './ProtocolGameParse'
+import { MessageModeEnum } from './Const'
 
 export class ProtocolGame {
   m_accountName: string = ''
@@ -73,7 +74,6 @@ export class ProtocolGame {
       }
 
       const onReceive = async (data: any) => {
-        console.log(data);
         await this.onRecv(data, { resolveOnce, cleanup, resolve })
       }
 
@@ -332,6 +332,72 @@ export class ProtocolGame {
     if (!this.m_connection) return
     const msg = new OutputMessage()
     msg.addU8(0x72) // Proto::ClientTurnWest
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendTalk */
+  sendTalk(mode: number, channelId: number, receiver: string, message: string) {
+    if (!this.m_connection) return
+    if (!message || message.length === 0) return
+    if (message.length > 0xff) return
+
+    const serverMode = this.m_protocolGameParser.translateMessageModeToServer(g_game.getClientVersion(), mode)
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientTalk)
+    msg.addU8(serverMode)
+
+    switch (mode) {
+      case MessageModeEnum.MessagePrivateTo:
+      case MessageModeEnum.MessageGamemasterPrivateTo:
+      case MessageModeEnum.MessageRVRAnswer:
+        msg.addString(receiver ?? '')
+        break
+      case MessageModeEnum.MessageChannel:
+      case MessageModeEnum.MessageChannelHighlight:
+      case MessageModeEnum.MessageChannelManagement:
+      case MessageModeEnum.MessageGamemasterChannel:
+        msg.addU16(channelId ?? 0)
+        break
+      default:
+        break
+    }
+
+    msg.addString(message)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendRequestChannels */
+  sendRequestChannels() {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientRequestChannels)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendJoinChannel */
+  sendJoinChannel(channelId: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientJoinChannel)
+    msg.addU16(channelId ?? 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendLeaveChannel */
+  sendLeaveChannel(channelId: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientLeaveChannel)
+    msg.addU16(channelId ?? 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendOpenPrivateChannel */
+  sendOpenPrivateChannel(receiver: string) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientOpenPrivateChannel)
+    msg.addString(receiver ?? '')
     this.m_connection.send(msg.getRawBuffer())
   }
 }

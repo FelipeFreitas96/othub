@@ -8,6 +8,7 @@ import { Position } from './Position'
 import type { Point, Rect } from './types'
 import { g_map } from './ClientMap'
 import { g_dispatcher } from '../framework/EventDispatcher'
+import { g_drawPool } from '../graphics/DrawPoolManager'
 
 /** OTC: Color::from8bit(int) – 8bit color index to RGB. */
 function colorFrom8bit(c: number): { r: number; g: number; b: number; a?: number } {
@@ -21,7 +22,7 @@ function colorFrom8bit(c: number): { r: number; g: number; b: number; a?: number
 }
 
 /** OTC: CachedText – text, font, align, getTextSize. Stub: we use canvas measureText. */
-function getTextSize(text: string, font: string = '10px sans-serif'): { width: number; height: number } {
+function getTextSize(text: string, font: string = '14px sans-serif'): { width: number; height: number } {
   if (typeof document === 'undefined' || !text) return { width: 0, height: 10 }
   const ctx = document.createElement('canvas').getContext('2d')
   if (!ctx) return { width: text.length * 6, height: 10 }
@@ -75,13 +76,20 @@ export class AnimatedText {
     p.y *= scale
     const rect: Rect = { x: p.x, y: p.y, width: textSize.width * scale, height: textSize.height * scale }
     const t0 = tf / 1.2
-    let color = { ...this.m_color }
-    if (t > t0) {
-      color.a = Math.max(0, 1 - (t - t0) / (tf - t0))
-    }
-    // OTC: m_cachedText.draw(rect, color) – stub: draw via pipeline or 2d context if needed later
-    ;(this as any).__lastDrawRect = rect
-    ;(this as any).__lastDrawColor = color
+    let alpha = this.normalizeAlpha(this.m_color.a)
+    if (t > t0) alpha *= Math.max(0, 1 - (t - t0) / (tf - t0))
+    if (alpha <= 0 || !this.m_text) return
+
+    // Render text through the same draw pool pipeline used by creature info.
+    // This keeps animated text in-world and obeying framebuffer transforms.
+    g_drawPool.setOpacity(alpha, true)
+    g_drawPool.beginCreatureInfo({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 })
+    g_drawPool.addCreatureInfoText(this.m_text, rect, {
+      r: this.clampColorByte(this.m_color.r),
+      g: this.clampColorByte(this.m_color.g),
+      b: this.clampColorByte(this.m_color.b),
+    })
+    g_drawPool.endCreatureInfo()
   }
 
   /** OTC: void AnimatedText::onAppear() */
@@ -151,5 +159,19 @@ export class AnimatedText {
 
   asAnimatedText(): AnimatedText {
     return this
+  }
+
+  private clampColorByte(value: number | undefined): number {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return 255
+    if (n <= 1) return Math.max(0, Math.min(255, Math.round(n * 255)))
+    return Math.max(0, Math.min(255, Math.round(n)))
+  }
+
+  private normalizeAlpha(value: number | undefined): number {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return 1
+    if (n <= 1) return Math.max(0, Math.min(1, n))
+    return Math.max(0, Math.min(1, n / 255))
   }
 }

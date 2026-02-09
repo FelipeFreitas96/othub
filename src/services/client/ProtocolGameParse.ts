@@ -86,6 +86,11 @@ const GAME_SERVER_OPCODES = {
   GameServerPlayerState: 162,   // 0xA2 – parsePlayerState
   GameServerClearTarget: 163,     // 0xA3 – parsePlayerCancelAttack
   GameServerTalk: 170,            // 0xAA – parseTalk (creature says: name, level, mode, pos/channelId, text)
+  GameServerChannels: 171,        // 0xAB – parseChannelList
+  GameServerOpenChannel: 172,     // 0xAC – parseOpenChannel
+  GameServerOpenPrivateChannel: 173, // 0xAD – parseOpenPrivateChannel
+  GameServerOpenOwnChannel: 178,  // 0xB2 – parseOpenOwnPrivateChannel
+  GameServerCloseChannel: 179,    // 0xB3 – parseCloseChannel
   GameServerTextMessage: 180,   // 0xB4 – parseTextMessage (system: damage/heal/exp/channel mgmt)
   GameServerCancelWalk: 181,   // 0xB5 – servidor rejeitou o passo (ex.: andar em parede)
   GameServerWalkWait: 182,      // 0xB6 – servidor pede esperar N ms antes de andar
@@ -113,6 +118,11 @@ export const GAME_CLIENT_OPCODES = {
   GameClientWalkSoutheast: 0x6B,
   GameClientWalkSouthwest: 0x6C,
   GameClientWalkNorthwest: 0x6D,
+  GameClientTalk: 150,
+  GameClientRequestChannels: 151,
+  GameClientJoinChannel: 152,
+  GameClientLeaveChannel: 153,
+  GameClientOpenPrivateChannel: 154,
 }
 
 /** OTC Otc::Direction – mapeamento opcode walk → direção (North=0, East=1, South=2, West=3, NE=4, NW=5, SE=6, SW=7). */
@@ -474,6 +484,26 @@ export class ProtocolGameParse {
 
           case GAME_SERVER_OPCODES.GameServerTalk:
             this.parseTalk(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerChannels:
+            this.parseChannelList(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerOpenChannel:
+            this.parseOpenChannel(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerOpenPrivateChannel:
+            this.parseOpenPrivateChannel(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerOpenOwnChannel:
+            this.parseOpenOwnPrivateChannel(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCloseChannel:
+            this.parseCloseChannel(msg)
             break
 
           case GAME_SERVER_OPCODES.GameServerTextMessage:
@@ -998,9 +1028,26 @@ export class ProtocolGameParse {
     return m
   }
 
+  buildMessageModesMapToServer(version: number) {
+    const fromServer = this.buildMessageModesMap(version)
+    const toServer: Record<number, number> = {}
+    for (const [serverByteRaw, modeRaw] of Object.entries(fromServer)) {
+      const serverByte = Number(serverByteRaw)
+      const mode = Number(modeRaw)
+      if (!Number.isFinite(serverByte) || !Number.isFinite(mode)) continue
+      if (toServer[mode] == null) toServer[mode] = serverByte
+    }
+    return toServer
+  }
+
   translateMessageModeFromServer(version: number, serverByte: number) {
     const map = this.buildMessageModesMap(version)
     return map[serverByte] ?? MessageModeEnum.MessageInvalid
+  }
+
+  translateMessageModeToServer(version: number, mode: number) {
+    const map = this.buildMessageModesMapToServer(version)
+    return map[mode] ?? mode
   }
 
   parseTalk(msg: InputMessage) {
@@ -1059,8 +1106,71 @@ export class ProtocolGameParse {
     }
 
     const text = msg.getString()
+    g_game.processTalk?.(name, level, mode, text, channelId, pos ?? new Position())
+
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ot:talk', { detail: { name, level, mode: messageByte, text, channelId, pos } }))
+      window.dispatchEvent(new CustomEvent('ot:talk', { detail: { name, level, mode, serverMode: messageByte, text, channelId, pos } }))
+    }
+  }
+
+  /** OTC: ProtocolGame::parseChannelList */
+  parseChannelList(msg: InputMessage) {
+    const channelListSize = msg.getU8()
+    const channelList: Array<[number, string]> = []
+    for (let i = 0; i < channelListSize; i++) {
+      const channelId = msg.getU16()
+      const channelName = msg.getString()
+      channelList.push([channelId, channelName])
+    }
+    g_game.processChannelList?.(channelList)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:channelList', { detail: { channelList } }))
+    }
+  }
+
+  /** OTC: ProtocolGame::parseOpenChannel */
+  parseOpenChannel(msg: InputMessage) {
+    const channelId = msg.getU16()
+    const channelName = msg.getString()
+
+    if (isFeatureEnabled('GameChannelPlayerList')) {
+      const joinedPlayers = msg.getU16()
+      for (let i = 0; i < joinedPlayers; i++) g_game.formatCreatureName(msg.getString())
+      const invitedPlayers = msg.getU16()
+      for (let i = 0; i < invitedPlayers; i++) g_game.formatCreatureName(msg.getString())
+    }
+
+    g_game.processOpenChannel?.(channelId, channelName)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:openChannel', { detail: { channelId, channelName } }))
+    }
+  }
+
+  /** OTC: ProtocolGame::parseOpenPrivateChannel */
+  parseOpenPrivateChannel(msg: InputMessage) {
+    const name = g_game.formatCreatureName(msg.getString())
+    g_game.processOpenPrivateChannel?.(name)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:openPrivateChannel', { detail: { name } }))
+    }
+  }
+
+  /** OTC: ProtocolGame::parseOpenOwnPrivateChannel */
+  parseOpenOwnPrivateChannel(msg: InputMessage) {
+    const channelId = msg.getU16()
+    const channelName = msg.getString()
+    g_game.processOpenOwnPrivateChannel?.(channelId, channelName)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:openOwnPrivateChannel', { detail: { channelId, channelName } }))
+    }
+  }
+
+  /** OTC: ProtocolGame::parseCloseChannel */
+  parseCloseChannel(msg: InputMessage) {
+    const channelId = msg.getU16()
+    g_game.processCloseChannel?.(channelId)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ot:closeChannel', { detail: { channelId } }))
     }
   }
 
@@ -1069,7 +1179,7 @@ export class ProtocolGameParse {
     const code = msg.getU8()
     const mode = this.translateMessageModeFromServer(clientVersion, code)
     let text = ''
-    const detail: any = { mode: code, text: '' }
+    const detail: any = { mode, serverMode: code, text: '' }
 
     switch (mode) {
       case MessageModeEnum.MessageChannelManagement:
@@ -1091,6 +1201,11 @@ export class ProtocolGameParse {
           { value: msg.getU32(), color: msg.getU8() }
         ]
         text = msg.getString()
+        for (const entry of detail.damage) {
+          if ((entry.value ?? 0) > 0) {
+            g_map.addAnimatedText(new AnimatedText(String(entry.value), entry.color), detail.pos)
+          }
+        }
         break
       }
       case MessageModeEnum.MessageHeal:
@@ -1100,6 +1215,7 @@ export class ProtocolGameParse {
         detail.value = msg.getU32()
         detail.color = msg.getU8()
         text = msg.getString()
+        g_map.addAnimatedText(new AnimatedText(String(detail.value), detail.color), detail.pos)
         break
       }
       case MessageModeEnum.MessageExp:
@@ -1108,6 +1224,7 @@ export class ProtocolGameParse {
         detail.value = (clientVersion >= 1332) ? msg.getU64() : msg.getU32()
         detail.color = msg.getU8()
         text = msg.getString()
+        g_map.addAnimatedText(new AnimatedText(String(detail.value), detail.color), detail.pos)
         break
       }
       case MessageModeEnum.MessageInvalid:
@@ -1120,6 +1237,7 @@ export class ProtocolGameParse {
       text = msg.getString()
     }
     detail.text = text
+    g_game.processTextMessage?.(mode, text, detail)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:textMessage', { detail }))
     }
