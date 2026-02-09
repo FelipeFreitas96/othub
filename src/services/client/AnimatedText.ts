@@ -45,7 +45,7 @@ export class AnimatedText {
   private m_animationStart = Date.now()
   /** OTC: CachedText – stub: plain text + getTextSize */
   private m_text = ''
-  private m_font = '10px sans-serif'
+  private m_font = '14spx sans-serif'
   private m_align: 'left' | 'center' | 'right' = 'left'
   /** OTC: Point m_offset */
   private m_offset: Point = { x: 0, y: 0 }
