@@ -25,6 +25,8 @@ import type { MapPosInfo, Point } from './types'
 import { g_gameConfig } from './gameConfig'
 
 const TILE_PIXELS = 32
+// OTClient: drawDimension = visibleDimension + Size(3, 3)
+const DRAW_DIMENSION_MARGIN_TILES = 3
 
 interface AwareRange {
   left: number
@@ -102,7 +104,8 @@ export class MapView {
   /** OTC: m_floorViewMode – Otc::ALWAYS_WITH_TRANSPARENCY etc. 0 = normal. */
   m_floorViewMode: number = 0
   /** OTC: m_drawViewportEdge. */
-  m_drawViewportEdge: boolean = false
+  // Keep viewport-edge tiles enabled in this port to avoid lateral clipping artifacts on walk.
+  m_drawViewportEdge: boolean = true
   /** OTC: m_shadowFloorIntensity – opacity for floor above camera. */
   m_shadowFloorIntensity: number = 0
   /** OTC: m_rectDimension – rect for shadow fill (draw dimension in pixels). */
@@ -120,10 +123,13 @@ export class MapView {
   private _lightTexture: THREE.CanvasTexture | null = null
   private _lightOverlayMesh: THREE.Mesh | null = null
 
-  constructor({ host, w, h }: { host: HTMLElement, w: number, h: number }) {
+  constructor({ host, w: _w, h: _h }: { host: HTMLElement, w: number, h: number }) {
     const visible = this.getViewportDimensions()
     this.m_visibleDimension = { width: visible.width, height: visible.height }
-    this.m_drawDimension = { width: w, height: h }
+    this.m_drawDimension = {
+      width: this.m_visibleDimension.width + DRAW_DIMENSION_MARGIN_TILES,
+      height: this.m_visibleDimension.height + DRAW_DIMENSION_MARGIN_TILES,
+    }
     this.m_virtualCenterOffset = {
       x: (this.m_drawDimension.width / 2) - 1,
       y: (this.m_drawDimension.height / 2) - 1,
@@ -148,7 +154,7 @@ export class MapView {
     this.m_zoomLevel = 1.0
 
     this.m_lightView = new LightView()
-    this.m_lightView.resize(w, h, TILE_PIXELS)
+    this.m_lightView.resize(this.m_drawDimension.width, this.m_drawDimension.height, TILE_PIXELS)
     this.m_lightView.setGlobalLight(g_map?.getLight?.() ?? { intensity: 250, color: 215 })
 
     this.m_pool.setMap(null)

@@ -11,6 +11,8 @@ let clientVersion = 860
 let serverBeat = 0
 let canReportBugs = false
 let expertPvpMode = false
+let ping = -1
+let walkMaxSteps = 1
 
 export interface CharacterInfo {
   worldHost?: string
@@ -176,6 +178,22 @@ export class Game {
     return serverBeat
   }
 
+  getPing() {
+    return ping
+  }
+
+  setPing(value: number) {
+    ping = Number.isFinite(value) ? Math.max(-1, Math.floor(value)) : -1
+  }
+
+  getWalkMaxSteps() {
+    return Math.max(0, Math.floor(walkMaxSteps))
+  }
+
+  setWalkMaxSteps(value: number) {
+    walkMaxSteps = Math.max(0, Math.floor(value))
+  }
+
   // OTC: Game::canPerformGameAction – game.cpp
   canPerformGameAction(): boolean {
     return this.isOnline()
@@ -263,6 +281,22 @@ export function setGameClientVersion(version: number | string) {
 
 export function setServerBeat(v: number) {
   serverBeat = v
+}
+
+export function getPing() {
+  return ping
+}
+
+export function setPing(v: number) {
+  ping = Number.isFinite(v) ? Math.max(-1, Math.floor(v)) : -1
+}
+
+export function getWalkMaxSteps() {
+  return Math.max(0, Math.floor(walkMaxSteps))
+}
+
+export function setWalkMaxSteps(v: number) {
+  walkMaxSteps = Math.max(0, Math.floor(v))
 }
 
 export function setCanReportBugs(value: boolean) {

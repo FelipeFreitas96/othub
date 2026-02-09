@@ -11,6 +11,7 @@ import { Player } from './Player'
 import { g_map } from './ClientMap'
 import { Position, PositionLike } from './Position'
 import { Item } from './Item'
+import { g_game } from './Game'
 
 const DirInvalid = -1
 
@@ -151,7 +152,10 @@ export class LocalPlayer extends Player {
   canWalk(ignoreLock = false) {
     if (this.isDead()) return false
     if (this.isWalkLocked() && !ignoreLock) return false
-    if (this.getPosition().x !== this.getServerPosition().x ||
+    const walkMaxSteps = Math.max(0, g_game.getWalkMaxSteps?.() ?? 0)
+    if (walkMaxSteps > 0) {
+      if (this.m_preWalks.length > walkMaxSteps) return false
+    } else if (this.getPosition().x !== this.getServerPosition().x ||
         this.getPosition().y !== this.getServerPosition().y ||
         this.getPosition().z !== this.getServerPosition().z) {
       return false
@@ -163,7 +167,7 @@ export class LocalPlayer extends Player {
     return this.m_walkTimer.ticksElapsed() >= this.getStepDuration()
   }
 
-  getWalkMaxSteps() { return 0 }
+  getWalkMaxSteps() { return Math.max(0, g_game.getWalkMaxSteps?.() ?? 0) }
 
   getServerPosition() {
     return this.m_position ? this.m_position.clone() : new Position(0, 0, 0)
@@ -227,8 +231,9 @@ export class LocalPlayer extends Player {
 
   registerAdjustInvalidPosEvent() {
     this.cancelAdjustInvalidPosEvent()
-    const stepDuration = this.getStepDuration(true)
-    const delay = Math.min(Math.max(stepDuration, 100) + 100, 1000)
+    const stepDuration = this.getStepDuration()
+    const ping = g_game.getPing?.() ?? -1
+    const delay = Math.min(Math.max(stepDuration, ping) + 100, 1000)
     this.m_adjustInvalidPosEvent = setTimeout(() => {
       this.m_preWalks = []
       this.m_adjustInvalidPosEvent = null

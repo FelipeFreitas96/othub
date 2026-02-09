@@ -66,6 +66,11 @@ const GAME_SERVER_OPCODES = {
   GameServerGraphicalEffect: 131,   // 0x83 – parseMagicEffect
   GameServerTextEffect: 132,       // 0x84 – parseRemoveMagicEffect (>=1320) or parseAnimatedText
   GameServerMissleEffect: 133,     // 0x85 – parseDistanceMissile (or parseAnthem)
+  GameServerItemClasses: 134,      // 0x86 - parseItemClasses (>=1281) / parseCreatureMark
+  GameServerTrappers: 135,         // 0x87 - parseOpenForge (>=1281) / parseTrappers
+  GameServerBrowseForgeHistory: 136, // 0x88 - parseBrowseForgeHistory
+  GameServerCloseForgeWindow: 137, // 0x89 - parseCloseForgeWindow
+  GameServerForgeResult: 138,      // 0x8A - parseForgeResult
   GameServerCreatureData: 139,     // 0x8B – parseCreatureData
   GameServerCreatureHealth: 140,   // 0x8C – parseCreatureHealth
   GameServerCreatureLight: 141,    // 0x8D – parseCreatureLight
@@ -373,7 +378,6 @@ export class ProtocolGameParse {
   }
 
   // 1:1 protocolgameparse.cpp getMappedThing (L3808)
-  // When lookup by (pos, stackpos) fails (stack order differs client vs server), fallback: single creature on tile or local player on that tile.
   getMappedThing(msg: InputMessage): Thing | null {
     const x = msg.getU16()
     if (x !== 0xffff) {
@@ -381,28 +385,11 @@ export class ProtocolGameParse {
       const z = msg.getU8()
       const stackpos = msg.getU8()
       const pos = new Position(x, y, z)
-      const thing = g_map.getThing(pos, stackpos)
-      const tile = g_map.getTile(pos)
-      const creatures = tile?.m_things?.filter((t) => t.isCreature?.()) ?? []
-      if (thing) {
-        if (thing.isCreature?.()) return thing
-        if (creatures.length === 1) return creatures[0]
-        if (tile?.m_things?.some((t) => t === g_player)) return g_player
-        if (creatures.length > 1) return creatures[0]
-      }
-      if (tile?.m_things?.length) {
-        if (creatures.length === 1) return creatures[0]
-        if (tile.m_things.some((t) => t === g_player)) return g_player
-        if (creatures.length > 1) return creatures[0]
-      }
+      return g_map.getThing(pos, stackpos)
     } else {
       const creatureId = msg.getU32()
-      const thing = g_map.getCreatureById(creatureId)
-      if (thing) return thing
-      const found = g_map.findCreaturePosition(creatureId)
-      if (found) return g_map.getThing(new Position(found.pos.x, found.pos.y, found.pos.z), found.stackPos)
+      return g_map.getCreatureById(creatureId)
     }
-    return null
   }
 
   // 1:1 protocolgameparse.cpp getThing (L3794)
@@ -504,6 +491,28 @@ export class ProtocolGameParse {
 
           case GAME_SERVER_OPCODES.GameServerMissleEffect:
             this.parseDistanceMissile(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerItemClasses:
+            if (g_game.getClientVersion() >= 1281) this.parseItemClasses(msg)
+            else this.parseCreatureMark(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerForgeResult:
+            if (g_game.getClientVersion() >= 1281) this.parseForgeResult(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerTrappers:
+            if (g_game.getClientVersion() >= 1281) this.parseOpenForge(msg)
+            else this.parseTrappers(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerBrowseForgeHistory:
+            this.parseBrowseForgeHistory(msg)
+            break
+
+          case GAME_SERVER_OPCODES.GameServerCloseForgeWindow:
+            this.parseCloseForgeWindow(msg)
             break
 
           case GAME_SERVER_OPCODES.GameServerAmbient:
@@ -693,6 +702,10 @@ export class ProtocolGameParse {
 
           case GAME_SERVER_OPCODES.GameServerPing:
             await connection.send(new Uint8Array([GAME_CLIENT_OPCODES.GameClientPingBack]))
+            break
+
+          case GAME_SERVER_OPCODES.GameServerPingBack:
+            // Keep in sync with OTC parser by consuming opcode 0x1D even when no client-side RTT loop is active.
             break
 
           case GAME_SERVER_OPCODES.GameServerLoginOrPendingState:
@@ -1200,11 +1213,56 @@ export class ProtocolGameParse {
 
   // 1:1 protocolgameparse.cpp parseCreatureMove (L1494)
   parseCreatureMove(msg: InputMessage) {
-    const thing = this.getMappedThing(msg)
+    const x = msg.getU16()
+    let thing: Thing | null = null
+    let oldPos: Position | null = null
+    let stackPos = -1
+    let creatureId = 0
+
+    if (x !== 0xffff) {
+      const y = msg.getU16()
+      const z = msg.getU8()
+      stackPos = msg.getU8()
+      oldPos = new Position(x, y, z)
+      thing = g_map.getThing(oldPos, stackPos)
+    } else {
+      creatureId = msg.getU32()
+      thing = g_map.getCreatureById(creatureId)
+      if (!thing) {
+        const found = g_map.findCreaturePosition(creatureId)
+        if (found) thing = g_map.getThing(new Position(found.pos.x, found.pos.y, found.pos.z), found.stackPos)
+      }
+    }
+
     const newPos = this.getPosition(msg)
 
+    // Desync recovery only for creature move packets: never reuse this fallback for tile add/remove/transform.
+    if ((!thing || !thing.isCreature()) && oldPos) {
+      const tile = g_map.getTile(oldPos)
+      const creatures = tile?.m_things?.filter((t) => t.isCreature?.()) ?? []
+      if (creatures.length === 1) {
+        thing = creatures[0]
+      } else if (creatures.length > 1) {
+        const localPlayerId = g_player.getId?.()
+        if (localPlayerId != null) {
+          thing = creatures.find((c) => Number(c.getId?.()) === Number(localPlayerId)) ?? null
+        }
+        if (!thing) {
+          const byLastStep = creatures.find((c) => {
+            const lastTo = (c as Creature).m_lastStepToPosition
+            return !!lastTo && lastTo.x === newPos.x && lastTo.y === newPos.y && lastTo.z === newPos.z
+          })
+          if (byLastStep) thing = byLastStep
+        }
+      }
+    }
+
     if (!thing || !thing.isCreature()) {
-      console.error("ProtocolGame::parseCreatureMove: no creature found to move");
+      if (oldPos) {
+        console.error(`ProtocolGame::parseCreatureMove: no creature found to move (oldPos=${oldPos.x},${oldPos.y},${oldPos.z} stack=${stackPos} newPos=${newPos.x},${newPos.y},${newPos.z})`)
+      } else {
+        console.error(`ProtocolGame::parseCreatureMove: no creature found to move (creatureId=${creatureId} newPos=${newPos.x},${newPos.y},${newPos.z})`)
+      }
       return
     }
 
@@ -1293,13 +1351,14 @@ export class ProtocolGameParse {
 
   parseTileAddThing(msg: InputMessage) {
     const pos = this.getPosition(msg)
+    const stackPos = isFeatureEnabled('GameTileAddThingWithStackpos') ? msg.getU8() : -1
     const thing = this.getThing(msg)
     if (!thing) return
     if (thing.isCreature()) {
       const c = thing as Creature
       g_map.upsertCreature(c)
     }
-    g_map.addThing(thing, pos)
+    g_map.addThing(thing, pos, stackPos)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:map'))
     }
@@ -1426,6 +1485,192 @@ export class ProtocolGameParse {
     missile.setId(shotId)
     missile.setPath(fromPos, toPos)
     g_map.addThing(missile, fromPos)
+  }
+
+
+  /** OTC: parseForgeResult - opcode 0x8A (138). */
+  parseForgeResult(msg: InputMessage) {
+    const actionType = msg.getU8()
+    const convergence = msg.getU8() === 1
+    const success = msg.getU8() === 1
+    let leftItemId = msg.getU16()
+    let leftTier = msg.getU8()
+    const rightItemId = msg.getU16()
+    const rightTier = msg.getU8()
+
+    let bonus = 0
+    let coreCount = 0
+
+    if (actionType === 1) {
+      msg.getU8() // bonus type (none for transfer)
+    } else {
+      bonus = msg.getU8()
+      if (bonus === 2) {
+        coreCount = msg.getU8()
+      } else if (bonus >= 4 && bonus <= 8) {
+        leftItemId = msg.getU16()
+        leftTier = msg.getU8()
+      }
+    }
+
+    void convergence
+    void success
+    void leftItemId
+    void leftTier
+    void rightItemId
+    void rightTier
+    void coreCount
+  }
+
+  /** OTC: parseItemClasses - opcode 0x86 (134) on >= 1281. */
+  parseItemClasses(msg: InputMessage) {
+    const classSize = msg.getU8()
+    for (let i = 0; i < classSize; i++) {
+      msg.getU8() // classId
+      const tiersSize = msg.getU8()
+      for (let j = 0; j < tiersSize; j++) {
+        msg.getU8() // tier
+        msg.getU64() // price
+      }
+    }
+
+    const hasDynamicForgeVariables = isFeatureEnabled('GameDynamicForgeVariables')
+    const hasConvergence = isFeatureEnabled('GameForgeConvergence')
+
+    if (hasDynamicForgeVariables) {
+      const grades = msg.getU8()
+      for (let i = 0; i < grades; i++) {
+        msg.getU8() // tier
+        msg.getU8() // exaltedCores
+      }
+
+      if (hasConvergence) {
+        const totalConvergenceFusion = msg.getU8()
+        for (let i = 0; i < totalConvergenceFusion; i++) {
+          msg.getU8() // tier
+          msg.getU64() // price
+        }
+
+        const totalConvergenceTransfer = msg.getU8()
+        for (let i = 0; i < totalConvergenceTransfer; i++) {
+          msg.getU8() // tier
+          msg.getU64() // price
+        }
+      }
+
+      msg.getU8() // dustPercent
+      msg.getU8() // dustToSliver
+      msg.getU8() // sliverToCore
+      msg.getU8() // dustPercentUpgrade
+
+      if (g_game.getClientVersion() >= 1316) {
+        msg.getU16() // maxDustLevel
+        msg.getU16() // maxDustCap
+      } else {
+        msg.getU8() // maxDustLevel
+        msg.getU8() // maxDustCap
+      }
+
+      msg.getU8() // normalDustFusion
+      if (hasConvergence) msg.getU8() // convergenceDustFusion
+      msg.getU8() // normalDustTransfer
+      if (hasConvergence) msg.getU8() // convergenceDustTransfer
+      msg.getU8() // fusionChanceBase
+      msg.getU8() // fusionChanceImproved
+      msg.getU8() // fusionReduceTierLoss
+    } else {
+      let totalForgeValues = g_game.getClientVersion() >= 1316 ? 13 : 11
+      if (hasConvergence) totalForgeValues += 2
+      for (let i = 0; i < totalForgeValues; i++) msg.getU8()
+    }
+  }
+
+  /** OTC: parseCreatureMark - opcode 0x86 (134) on < 1281. */
+  parseCreatureMark(msg: InputMessage) {
+    const creatureId = msg.getU32()
+    const color = msg.getU8()
+    const creature = g_map.getCreatureById(creatureId)
+    if (!creature) return
+    creature.addTimedSquare?.(color)
+  }
+
+  /** OTC: parseTrappers - opcode 0x87 (135) on < 1281. */
+  parseTrappers(msg: InputMessage) {
+    const numTrappers = msg.getU8()
+    for (let i = 0; i < numTrappers; i++) {
+      msg.getU32()
+    }
+  }
+
+  /** OTC: parseOpenForge - opcode 0x87 (135) on >= 1281. */
+  parseOpenForge(msg: InputMessage) {
+    const fusionCount = msg.getU16()
+    for (let i = 0; i < fusionCount; i++) {
+      msg.getU8() // unknown friend items count
+      msg.getU16() // item id
+      msg.getU8() // tier
+      msg.getU16() // count
+    }
+
+    const convergenceFusionCount = msg.getU16()
+    for (let i = 0; i < convergenceFusionCount; i++) {
+      const items = msg.getU8()
+      for (let j = 0; j < items; j++) {
+        msg.getU16() // item id
+        msg.getU8() // tier
+        msg.getU16() // count
+      }
+    }
+
+    const transferTotalCount = msg.getU8()
+    for (let i = 0; i < transferTotalCount; i++) {
+      const donorCount = msg.getU16()
+      for (let j = 0; j < donorCount; j++) {
+        msg.getU16() // donor id
+        msg.getU8() // donor tier
+        msg.getU16() // donor count
+      }
+      const receiverCount = msg.getU16()
+      for (let j = 0; j < receiverCount; j++) {
+        msg.getU16() // receiver id
+        msg.getU16() // receiver count
+      }
+    }
+
+    const convergenceTransferCount = msg.getU8()
+    for (let i = 0; i < convergenceTransferCount; i++) {
+      const donorCount = msg.getU16()
+      for (let j = 0; j < donorCount; j++) {
+        msg.getU16() // donor id
+        msg.getU8() // donor tier
+        msg.getU16() // donor count
+      }
+      const receiverCount = msg.getU16()
+      for (let j = 0; j < receiverCount; j++) {
+        msg.getU16() // receiver id
+        msg.getU16() // receiver count
+      }
+    }
+
+    msg.getU16() // dustLevel
+  }
+
+  /** OTC: parseBrowseForgeHistory - opcode 0x88 (136). */
+  parseBrowseForgeHistory(msg: InputMessage) {
+    msg.getU16() // pageNumber
+    msg.getU16() // lastPage
+    const historyCount = msg.getU8()
+    for (let i = 0; i < historyCount; i++) {
+      msg.getU32() // createdAt
+      msg.getU8() // actionType
+      msg.getString() // description
+      msg.getU8() // bonus
+    }
+  }
+
+  /** OTC: parseCloseForgeWindow - opcode 0x89 (137). */
+  parseCloseForgeWindow(_msg: InputMessage) {
+    // no payload
   }
 
   parseDistanceEffect(msg: InputMessage) {

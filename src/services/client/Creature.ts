@@ -167,6 +167,7 @@ export class Creature extends Thing {
 
   constructor(data: CreatureData) {
     super()
+    const now = Date.now()
     this.m_id = data.id ?? data.creatureId ?? 0
     this.m_name = data.name ?? ''
     this.m_healthPercent = typeof data.health === 'number' ? data.health : 101
@@ -180,7 +181,7 @@ export class Creature extends Thing {
     this.m_walking = false
     this.m_walkOffset = { x: 0, y: 0 }
     this.m_walkTimer = {
-      m_startTime: 0,
+      m_startTime: now,
       restart: function () { this.m_startTime = Date.now() },
       ticksElapsed: function () { return Date.now() - this.m_startTime }
     }
@@ -209,7 +210,7 @@ export class Creature extends Thing {
       }
     }
     this.m_footTimer = {
-      m_startTime: 0,
+      m_startTime: now,
       restart: function () { this.m_startTime = Date.now() },
       ticksElapsed: function () { return Date.now() - this.m_startTime }
     }
