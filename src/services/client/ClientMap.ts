@@ -164,9 +164,9 @@ export class ClientMap {
     if (pos.z < this.getFirstAwareFloor() || pos.z > this.getLastAwareFloor()) return false
     const c = this.m_centralPosition
     const r = this.m_awareRange
-    const dx = Math.abs(pos.x - c.x)
-    const dy = Math.abs(pos.y - c.y)
-    return dx <= r.left && dx <= r.right && dy <= r.top && dy <= r.bottom
+    const relX = pos.x - c.x
+    const relY = pos.y - c.y
+    return relX >= -r.left && relX <= r.right && relY >= -r.top && relY <= r.bottom
   }
 
   /** OTC Map::isLookPossible(pos) – tiles we can look through (e.g. windows, doors). Stub: true. */
