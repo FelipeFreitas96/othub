@@ -3,8 +3,8 @@
  * Port 1:1 from attachedeffectmanager.h + attachedeffectmanager.cpp
  */
 
-import type { AttachedEffect } from './AttachedEffect'
-import type { ThingCategory } from './Const'
+import { AttachedEffect } from './AttachedEffect'
+import type { ThingCategory } from '../things/thingType'
 import type { Bounce } from './StaticData'
 
 /** OTC: stdext::map<uint16_t, AttachedEffectPtr> → Map<number, AttachedEffect> */

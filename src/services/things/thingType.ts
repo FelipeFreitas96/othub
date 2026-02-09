@@ -98,6 +98,7 @@ export class ThingType {
   m_customImage: string
   m_textureData: any[]
   m_textureCache: Map<string, HTMLCanvasElement>
+  m_maskedSpriteCache: Map<string, HTMLCanvasElement | null>
 
   constructor() {
     this.m_category = ThingCategory.Invalid
@@ -122,6 +123,7 @@ export class ThingType {
     /** OTC: m_textureData per animation phase; we cache canvas per (phase, layer, x, y, z) */
     this.m_textureData = []
     this.m_textureCache = new Map()
+    this.m_maskedSpriteCache = new Map()
   }
 
   getId() { return this.m_id }
@@ -145,9 +147,15 @@ export class ThingType {
   isGroundBorder() { return this.m_attribs.has(ThingAttr.GroundBorder) }
   isOnBottom() { return this.m_attribs.has(ThingAttr.OnBottom) }
   isOnTop() { return this.m_attribs.has(ThingAttr.OnTop) }
+  isTopGround() { return this.isGround() && this.m_size.width * this.m_size.height === 4 }
+  isTopGroundBorder() { return this.isGroundBorder() && this.m_size.width * this.m_size.height === 4 }
+  isSingleDimension() { return this.m_size.width === 1 && this.m_size.height === 1 }
   isFullGround() { return this.m_attribs.has(ThingAttr.FullGround) }
+  isNotWalkable() { return this.m_attribs.has(ThingAttr.NotWalkable) }
+  isNotPathable() { return this.m_attribs.has(ThingAttr.NotPathable) }
   blockProjectile() { return this.m_attribs.has(ThingAttr.BlockProjectile) }
   isDontHide() { return this.m_attribs.has(ThingAttr.DontHide) }
+  isIgnoreLook() { return this.m_attribs.has(ThingAttr.Look) }
   hasElevation() { return this.m_attribs.has(ThingAttr.Elevation) }
   isTranslucent() { return this.m_attribs.has(ThingAttr.Translucent) }
   hasDisplacement() { return this.m_attribs.has(ThingAttr.Displacement) }
@@ -249,6 +257,65 @@ export class ThingType {
     return canvas ?? null
   }
 
+  private isCreatureMaskLayer(layer: number): boolean {
+    return this.m_category === ThingCategory.Creature && this.m_layers >= 2 && layer > 0
+  }
+
+  private getMaskColorForLayer(layer: number): [number, number, number] | null {
+    // OTC thingtype.cpp: red, green, blue, yellow
+    const maskColors: [number, number, number][] = [
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 255],
+      [255, 255, 0],
+    ]
+    return maskColors[layer - 1] ?? null
+  }
+
+  private getMaskedSpriteCanvas(spriteId: number, src: HTMLCanvasElement, layer: number): HTMLCanvasElement | null {
+    const cacheKey = `${spriteId}_${layer}`
+    if (this.m_maskedSpriteCache.has(cacheKey)) return this.m_maskedSpriteCache.get(cacheKey) ?? null
+
+    const maskColor = this.getMaskColorForLayer(layer)
+    if (!maskColor) {
+      this.m_maskedSpriteCache.set(cacheKey, null)
+      return null
+    }
+
+    const masked = document.createElement('canvas')
+    masked.width = src.width
+    masked.height = src.height
+    const mctx = masked.getContext('2d')
+    if (!mctx) {
+      this.m_maskedSpriteCache.set(cacheKey, null)
+      return null
+    }
+
+    mctx.drawImage(src, 0, 0)
+    const imageData = mctx.getImageData(0, 0, masked.width, masked.height)
+    const data = imageData.data
+    const [mr, mg, mb] = maskColor
+    for (let i = 0; i < data.length; i += 4) {
+      const isMaskPixel = data[i + 0] === mr && data[i + 1] === mg && data[i + 2] === mb && data[i + 3] === 255
+      if (isMaskPixel) {
+        // OTC Image::overwriteMask(maskColor): insideColor = white
+        data[i + 0] = 255
+        data[i + 1] = 255
+        data[i + 2] = 255
+        data[i + 3] = 255
+      } else {
+        // outsideColor = alpha
+        data[i + 0] = 0
+        data[i + 1] = 0
+        data[i + 2] = 0
+        data[i + 3] = 0
+      }
+    }
+    mctx.putImageData(imageData, 0, 0)
+    this.m_maskedSpriteCache.set(cacheKey, masked)
+    return masked
+  }
+
   /**
    * OTC loadTexture(animationPhase) – builds the combined texture (all sprites for one frame).
    * frameGroupIndex: when set, use that frame group's dimensions and sprite range.
@@ -266,17 +333,23 @@ export class ThingType {
     if (!ctx) return null
     ctx.clearRect(0, 0, cw, ch)
     const spriteIds = this.m_spritesIndex ?? []
+    const isMaskLayer = this.isCreatureMaskLayer(layer)
+    const spriteLayer = isMaskLayer ? 1 : layer
     let drawn = 0
     for (let h = 0; h < bh; h++) {
       for (let w = 0; w < bw; w++) {
-        const idx = frameGroupIndex != null ? this.getSpriteIndexForGroup(frameGroupIndex, w, h, layer, xPattern, yPattern, zPattern, animationPhase) : this.getSpriteIndex(w, h, layer, xPattern, yPattern, zPattern, animationPhase)
+        const idx = frameGroupIndex != null
+          ? this.getSpriteIndexForGroup(frameGroupIndex, w, h, spriteLayer, xPattern, yPattern, zPattern, animationPhase)
+          : this.getSpriteIndex(w, h, spriteLayer, xPattern, yPattern, zPattern, animationPhase)
         const sid = idx >= 0 ? (spriteIds[idx] ?? 0) : 0
         if (!sid) continue
         const src = sprites.getCanvas(sid)
         if (!src) continue
+        const drawSrc = isMaskLayer ? this.getMaskedSpriteCanvas(sid, src, layer) : src
+        if (!drawSrc) continue
         const px = (bw - 1 - w) * 32
         const py = (bh - 1 - h) * 32
-        ctx.drawImage(src, 0, 0, 32, 32, px, py, 32, 32)
+        ctx.drawImage(drawSrc, 0, 0, 32, 32, px, py, 32, 32)
         drawn++
       }
     }
@@ -424,6 +497,8 @@ export class ThingType {
     this.m_null = false
     this.m_id = clientId
     this.m_category = category
+    this.m_textureCache.clear()
+    this.m_maskedSpriteCache.clear()
     const clientVersion = g_game.getClientVersion()
     let count = 0
     let attr = -1

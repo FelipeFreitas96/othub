@@ -12,10 +12,6 @@ import {
   CompositionMode,
   rectValid,
   rectFromSize,
-  rectLeft,
-  rectTop,
-  rectRight,
-  rectBottom,
   sizeValid,
 } from './declarations'
 import { CoordsBuffer } from './CoordsBuffer'
@@ -120,19 +116,7 @@ export class FrameBuffer {
   prepare(dest: Rect, src: Rect, colorClear: Color = ColorAlpha, flipDirection = 0): void {
     const size = this.getSize()
     const _dest = rectValid(dest) ? dest : rectFromSize(size)
-    const _srcRaw = rectValid(src) ? src : rectFromSize(size)
-
-    // FIX: convert src from tile units to pixel coordinates.
-    // calcFramebufferSource() returns tile-space values (divided by TILE_PIXELS).
-    // drawCoordsBuffer normalizes tex coords by dividing by texture image size (pixels).
-    // So src must be in PIXELS, not in 0-1 or tile units.
-    const TILE_PIXELS = 32
-    const _src: Rect = {
-      x: rectLeft(_srcRaw) * TILE_PIXELS,
-      y: rectTop(_srcRaw) * TILE_PIXELS,
-      width: (rectRight(_srcRaw) - rectLeft(_srcRaw)) * TILE_PIXELS,
-      height: (rectBottom(_srcRaw) - rectTop(_srcRaw)) * TILE_PIXELS,
-    }
+    const _src = rectValid(src) ? src : rectFromSize(size)
 
     this.m_colorClear = { ...colorClear }
     this.m_coordsBuffer.clear()

@@ -36,9 +36,18 @@ export abstract class Thing {
   getId(): number | string { return this.m_clientId }
   
   getPosition(): Position { return this.m_position }
-  setPosition(pos: Position, stackPos: number = 0) { 
-    this.m_position = pos
+  setPosition(pos: Position, stackPos: number = 0) {
+    const nextPos = pos instanceof Position ? pos.clone() : Position.from(pos as any)
+    const oldPos = this.m_position instanceof Position ? this.m_position.clone() : Position.from(this.m_position as any)
     this.m_stackPos = stackPos
+
+    if (oldPos.x === nextPos.x && oldPos.y === nextPos.y && oldPos.z === nextPos.z) {
+      this.m_position = nextPos
+      return
+    }
+
+    this.m_position = nextPos
+    this.onPositionChange(nextPos.clone(), oldPos)
   }
 
   getStackPos(): number { return this.m_stackPos }
@@ -148,12 +157,8 @@ export abstract class Thing {
 
   // Optional light drawing
   drawLight?(
-    tileX: number,
-    tileY: number,
-    drawElevationPx: number,
-    zOff: number,
-    tileZ: number,
-    offset?: { x: number, y: number }
+    dest: DrawDest,
+    lightView?: LightView | null
   ): void
 
   // Lifecycle hooks

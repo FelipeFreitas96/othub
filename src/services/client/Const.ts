@@ -11,6 +11,7 @@ export enum SkillEnum {
 export enum GameEventsEnum {
     processLogin = 'processLogin',
     onGameStart = 'onGameStart',
+    onGameEnd = 'onGameEnd',
     onConnectionError = 'onConnectionError',
 }
 

@@ -300,16 +300,12 @@ export class Painter {
     this.setCompositionMode(CompositionMode.NORMAL)
   }
 
-  /** OTC: updateGlViewport() – glViewport(0, 0, width, height).
-   * CRITICAL FIX: Three.js setViewport() multiplies by pixelRatio internally.
-   * For render targets, we must compensate because RT buffers are NOT pixel-ratio-scaled.
-   * For screen rendering, pixelRatio scaling is correct (canvas buffer IS scaled).
-   */
+  /** OTC: updateGlViewport() – glViewport(0, 0, width, height). */
   private updateGlViewport(): void {
     if (!this.m_renderer) return
     if (this.m_renderTarget) {
-      // Render target: viewport must match RT buffer dimensions exactly.
-      // setViewport(w, h) → gl.viewport(w*dpr, h*dpr), so pass w/dpr to get exact w.
+      // RenderTarget buffers are not pixel-ratio-scaled.
+      // Three.js multiplies viewport by DPR internally, so compensate here.
       const dpr = this.m_renderer.getPixelRatio() || 1
       const w = this.m_renderTarget.width
       const h = this.m_renderTarget.height
@@ -333,17 +329,19 @@ export class Painter {
     const r = this.m_clipRect
     const rw = r.width ?? 0
     const rh = r.height ?? 0
+    const dpr = this.m_renderer.getPixelRatio() || 1
+    const scale = this.m_renderTarget ? (1 / dpr) : 1
     const valid = rw > 0 && rh > 0
     if (valid) {
       const x = r.x ?? 0
       const y = r.y ?? 0
       const resH = this.m_resolution.height ?? 0
-      this.m_renderer.setScissor(x, resH - y - rh, rw, rh)
+      this.m_renderer.setScissor(x * scale, (resH - y - rh) * scale, rw * scale, rh * scale)
       this.m_renderer.setScissorTest(true)
     } else {
       const w = this.m_resolution.width ?? 0
       const h = this.m_resolution.height ?? 0
-      this.m_renderer.setScissor(0, 0, w, h)
+      this.m_renderer.setScissor(0, 0, w * scale, h * scale)
       this.m_renderer.setScissorTest(false)
     }
   }
@@ -413,6 +411,7 @@ export class Painter {
         transparent: true,
         depthTest: false,
         depthWrite: false,
+        side: THREE.DoubleSide,
       })
       this.m_drawMesh = new THREE.Mesh(this.m_drawGeo, this.m_drawMat)
       this.m_drawMesh.frustumCulled = false
@@ -466,52 +465,15 @@ export class Painter {
       this.m_lastMapWasNull = mapIsNull
     }
     mat.map = newMap
-    mat.color.setRGB(this.m_color.r ?? 1, this.m_color.g ?? 1, this.m_color.b ?? 1)
-    mat.opacity = this.m_opacity
+    mat.color.setRGB(
+      this.normalizeColorChannel(this.m_color.r, 1),
+      this.normalizeColorChannel(this.m_color.g, 1),
+      this.normalizeColorChannel(this.m_color.b, 1)
+    )
+    const colorAlpha = this.normalizeColorChannel(this.m_color.a, 1)
+    mat.opacity = Math.max(0, Math.min(1, this.m_opacity * colorAlpha))
 
-    // Set blending mode based on composition mode (OTC painter states)
-    switch (this.m_compositionMode) {
-      case CompositionMode.REPLACE:
-        // OTC: glBlendFunc(GL_ONE, GL_ZERO) – no blending, direct copy
-        mat.blending = THREE.NoBlending
-        break
-      case CompositionMode.MULTIPLY:
-        // OTC: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA)
-        mat.blending = THREE.CustomBlending
-        mat.blendSrc = THREE.DstColorFactor
-        mat.blendDst = THREE.OneMinusSrcAlphaFactor
-        mat.blendSrcAlpha = THREE.OneFactor
-        mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor
-        break
-      case CompositionMode.ADD:
-        // OTC: glBlendFunc(GL_SRC_ALPHA, GL_ONE) – additive
-        mat.blending = THREE.CustomBlending
-        mat.blendSrc = THREE.SrcAlphaFactor
-        mat.blendDst = THREE.OneFactor
-        mat.blendSrcAlpha = THREE.SrcAlphaFactor
-        mat.blendDstAlpha = THREE.OneFactor
-        break
-      case CompositionMode.LIGHT:
-        // OTC: glBlendFunc(GL_ONE, GL_ONE) – pure additive for lights
-        mat.blending = THREE.CustomBlending
-        mat.blendSrc = THREE.OneFactor
-        mat.blendDst = THREE.OneFactor
-        mat.blendSrcAlpha = THREE.OneFactor
-        mat.blendDstAlpha = THREE.OneFactor
-        break
-      case CompositionMode.DESTINATION_BLENDING:
-        // OTC: glBlendFunc(GL_DST_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        mat.blending = THREE.CustomBlending
-        mat.blendSrc = THREE.DstAlphaFactor
-        mat.blendDst = THREE.OneMinusSrcAlphaFactor
-        mat.blendSrcAlpha = THREE.DstAlphaFactor
-        mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor
-        break
-      default:
-        // NORMAL: standard alpha blending – glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        mat.blending = THREE.NormalBlending
-        break
-    }
+    this.applyCompositionMode(mat, this.m_compositionMode)
 
     // Render – add mesh to scene, draw, remove.
     // (add/remove is cheap; the expensive part is geometry/material creation which we skip.)
@@ -587,24 +549,17 @@ export class Painter {
       transparent: true,
       depthTest: false,
       depthWrite: false,
-      blending: useMultiply ? THREE.CustomBlending : THREE.NormalBlending,
-      ...(useMultiply
-        ? {
-          blendSrc: THREE.DstColorFactor,
-          blendDst: THREE.OneMinusSrcAlphaFactor,
-          blendSrcAlpha: THREE.OneFactor,
-          blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
-        }
-        : {}),
+      side: THREE.DoubleSide,
       color:
         useMultiply && multiplyColor
           ? new THREE.Color(
-            (multiplyColor.r ?? 255) / 255,
-            (multiplyColor.g ?? 255) / 255,
-            (multiplyColor.b ?? 255) / 255
+            this.normalizeColorChannel(multiplyColor.r, 1),
+            this.normalizeColorChannel(multiplyColor.g, 1),
+            this.normalizeColorChannel(multiplyColor.b, 1)
           )
           : new THREE.Color(1, 1, 1),
     })
+    this.applyCompositionMode(mat, Number(compositionMode))
 
     const mesh = new THREE.Mesh(this.m_plane, mat)
     mesh.visible = true
@@ -618,10 +573,10 @@ export class Painter {
   clear(color: Color): void {
     if (!this.m_renderer) return
     this.m_renderer.setRenderTarget(this.m_renderTarget)
-    const r = (color.r ?? 0) > 1 ? (color.r ?? 0) / 255 : (color.r ?? 0)
-    const g = (color.g ?? 0) > 1 ? (color.g ?? 0) / 255 : (color.g ?? 0)
-    const b = (color.b ?? 0) > 1 ? (color.b ?? 0) / 255 : (color.b ?? 0)
-    const a = (color.a ?? 0) > 1 ? (color.a ?? 0) / 255 : (color.a ?? 0)
+    const r = this.normalizeColorChannel(color.r, 0)
+    const g = this.normalizeColorChannel(color.g, 0)
+    const b = this.normalizeColorChannel(color.b, 0)
+    const a = this.normalizeColorChannel(color.a, 0)
     this.m_renderer.setClearColor(new THREE.Color(r, g, b), a)
     this.m_renderer.clear(true, true, false)
   }
@@ -635,10 +590,10 @@ export class Painter {
     const oldClipRect = { ...this.m_clipRect }
     this.setClipRect(rect)
     this.m_renderer.setRenderTarget(this.m_renderTarget)
-    const r = (color.r ?? 0) > 1 ? (color.r ?? 0) / 255 : (color.r ?? 0)
-    const g = (color.g ?? 0) > 1 ? (color.g ?? 0) / 255 : (color.g ?? 0)
-    const b = (color.b ?? 0) > 1 ? (color.b ?? 0) / 255 : (color.b ?? 0)
-    const a = (color.a ?? 0) > 1 ? (color.a ?? 0) / 255 : (color.a ?? 0)
+    const r = this.normalizeColorChannel(color.r, 0)
+    const g = this.normalizeColorChannel(color.g, 0)
+    const b = this.normalizeColorChannel(color.b, 0)
+    const a = this.normalizeColorChannel(color.a, 0)
     this.m_renderer.setClearColor(new THREE.Color(r, g, b), a)
     this.m_renderer.clear(true, true, false)
     this.setClipRect(oldClipRect)
@@ -654,7 +609,11 @@ export class Painter {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 2))
     const mat = new THREE.LineBasicMaterial({
-      color: new THREE.Color((this.m_color.r ?? 1), (this.m_color.g ?? 1), (this.m_color.b ?? 1)),
+      color: new THREE.Color(
+        this.normalizeColorChannel(this.m_color.r, 1),
+        this.normalizeColorChannel(this.m_color.g, 1),
+        this.normalizeColorChannel(this.m_color.b, 1)
+      ),
       linewidth: Math.max(1, width),
     })
     const line = new THREE.Line(geometry, mat)
@@ -730,6 +689,62 @@ export class Painter {
     tex.colorSpace = THREE.SRGBColorSpace
     this.m_canvasTexCache.set(canvas, tex)
     return tex
+  }
+
+  private applyCompositionMode(mat: THREE.MeshBasicMaterial, mode: number): void {
+    switch (mode) {
+      case CompositionMode.REPLACE:
+        // OTC: glBlendFunc(GL_ONE, GL_ZERO)
+        mat.blending = THREE.NoBlending
+        break
+      case CompositionMode.MULTIPLY:
+        // OTC: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA)
+        mat.blending = THREE.CustomBlending
+        mat.blendSrc = THREE.DstColorFactor
+        mat.blendDst = THREE.OneMinusSrcAlphaFactor
+        mat.blendSrcAlpha = THREE.DstColorFactor
+        mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor
+        break
+      case CompositionMode.ADD:
+        // OTC: glBlendFunc(GL_ONE_MINUS_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR)
+        mat.blending = THREE.CustomBlending
+        mat.blendSrc = THREE.OneMinusSrcColorFactor
+        mat.blendDst = THREE.OneMinusSrcColorFactor
+        mat.blendSrcAlpha = THREE.OneMinusSrcColorFactor
+        mat.blendDstAlpha = THREE.OneMinusSrcColorFactor
+        break
+      case CompositionMode.DESTINATION_BLENDING:
+        // OTC: glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_DST_ALPHA)
+        mat.blending = THREE.CustomBlending
+        mat.blendSrc = THREE.OneMinusDstAlphaFactor
+        mat.blendDst = THREE.DstAlphaFactor
+        mat.blendSrcAlpha = THREE.OneMinusDstAlphaFactor
+        mat.blendDstAlpha = THREE.DstAlphaFactor
+        break
+      case CompositionMode.LIGHT:
+        // OTC: glBlendFunc(GL_ZERO, GL_SRC_COLOR)
+        mat.blending = THREE.CustomBlending
+        mat.blendSrc = THREE.ZeroFactor
+        mat.blendDst = THREE.SrcColorFactor
+        mat.blendSrcAlpha = THREE.ZeroFactor
+        mat.blendDstAlpha = THREE.SrcColorFactor
+        break
+      default:
+        // OTC NORMAL: glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE)
+        mat.blending = THREE.CustomBlending
+        mat.blendSrc = THREE.SrcAlphaFactor
+        mat.blendDst = THREE.OneMinusSrcAlphaFactor
+        mat.blendSrcAlpha = THREE.OneFactor
+        mat.blendDstAlpha = THREE.OneFactor
+        break
+    }
+  }
+
+  private normalizeColorChannel(value: number | undefined, fallback: number): number {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return fallback
+    if (n <= 1) return Math.max(0, Math.min(1, n))
+    return Math.max(0, Math.min(1, n / 255))
   }
 }
 

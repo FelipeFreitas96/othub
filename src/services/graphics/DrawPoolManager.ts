@@ -71,7 +71,6 @@ export class DrawPoolManager {
     return CURRENT_POOL !== DrawPoolType.LAST
   }
 
-  private m_drawFrameCount = 0
 
   /** OTC: draw() – iterate all pool types and draw each. Viewport size from Graphics (g_graphics.getViewport()), else window. */
   draw(): void {
@@ -91,8 +90,6 @@ export class DrawPoolManager {
     // Clear screen before drawing all pools (autoClear is OFF; we manage it here).
     g_painter.setRenderTarget(null)
     g_painter.clear({ r: 0, g: 0, b: 0, a: 1 })
-
-    this.m_drawFrameCount++
 
     // Draw all pools
     for (let i = 0; i < DrawPoolType.LAST; i++) {
@@ -216,16 +213,7 @@ export class DrawPoolManager {
     const earlyReturn = !shouldRepaint && hasFramebuffer
     if (earlyReturn) return
 
-    // DIAGNOSTIC: on first 3 frames for MAP, BYPASS framebuffer – draw tiles directly to screen.
-    // This tells us if the tile drawing code works independently of the FB/blit pipeline.
-    const bypassFB = hasFramebuffer && pool.getType() === DrawPoolType.MAP && this.m_drawFrameCount <= 3
-    if (bypassFB) {
-      // Set camera to FB dimensions so tile positions (0-576, 0-448) fit the frustum
-      const fb = pool.getFrameBuffer()!
-      const fbSize = fb.getSize()
-      g_painter.setResolution(fbSize)
-      console.log(`[DIAG #${this.m_drawFrameCount}] BYPASS FB: drawing tiles directly to screen with resolution ${fbSize.width}x${fbSize.height}`)
-    } else if (hasFramebuffer) {
+    if (hasFramebuffer) {
       pool.getFrameBuffer()!.bind()
     }
 
@@ -237,69 +225,11 @@ export class DrawPoolManager {
     }
 
     const list = pool.m_objectsDraw[1]
-
-    // DIAGNOSTIC: count and log object types on first frames
-    if (this.m_drawFrameCount <= 3 && pool.getType() === DrawPoolType.MAP) {
-      let coordsCount = 0, actionCount = 0, emptyCount = 0
-      for (const obj of list) {
-        if (obj.action) actionCount++
-        else if (obj.coords && obj.coords.getVertexCount() > 0) coordsCount++
-        else emptyCount++
-      }
-      console.log(`[DIAG #${this.m_drawFrameCount}] MAP objects: ${list.length} total, ${coordsCount} coords(with verts), ${actionCount} actions, ${emptyCount} empty`)
-    }
-
     for (const obj of list) {
-      // Skip the prepare() action when bypassing FB (it's only needed for the blit)
-      if (bypassFB && obj.action) continue
       this.drawObject(pool, obj)
     }
 
-    // DIAGNOSTIC: after tile draws, read back pixels to verify content
-    if (this.m_drawFrameCount <= 3 && pool.getType() === DrawPoolType.MAP) {
-      const renderer = g_painter.getRenderer()
-      if (renderer) {
-        if (!bypassFB) {
-          // Read from FB
-          const rt = g_painter.getRenderTarget()
-          if (rt) {
-            const buf = new Uint8Array(4)
-            const w = rt.width, h = rt.height
-            let foundColor = false
-            for (const [sx, sy] of [[w/2, h/2], [100, 100], [150, 150], [200, 200], [250, 250]]) {
-              renderer.readRenderTargetPixels(rt, Math.floor(sx), Math.floor(sy), 1, 1, buf)
-              if (buf[0] > 0 || buf[1] > 0 || buf[2] > 0) {
-                console.log(`[DIAG #${this.m_drawFrameCount}] FB pixel at (${Math.floor(sx)},${Math.floor(sy)}): rgba(${buf[0]},${buf[1]},${buf[2]},${buf[3]}) ← HAS COLOR`)
-                foundColor = true
-                break
-              }
-            }
-            if (!foundColor) console.log(`[DIAG #${this.m_drawFrameCount}] FB: ALL sampled pixels are BLACK`)
-          }
-        } else {
-          // Read from screen (bypass mode)
-          const gl = renderer.getContext() as WebGLRenderingContext
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-          const buf = new Uint8Array(4)
-          const bw = gl.drawingBufferWidth, bh = gl.drawingBufferHeight
-          let foundColor = false
-          for (const [sx, sy] of [[bw/2, bh/2], [100, 100], [150, bh-150], [200, bh-200], [250, bh-250]]) {
-            gl.readPixels(Math.floor(sx), Math.floor(sy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf)
-            if (buf[0] > 0 || buf[1] > 0 || buf[2] > 0) {
-              console.log(`[DIAG #${this.m_drawFrameCount}] SCREEN pixel at (${Math.floor(sx)},${Math.floor(sy)}): rgba(${buf[0]},${buf[1]},${buf[2]},${buf[3]}) ← HAS COLOR`)
-              foundColor = true
-              break
-            }
-          }
-          if (!foundColor) console.log(`[DIAG #${this.m_drawFrameCount}] SCREEN: ALL sampled pixels are BLACK after tile draws`)
-        }
-      }
-    }
-
-    if (bypassFB) {
-      // Restore screen resolution
-      g_painter.setResolution(this.m_size, this.m_transformMatrix)
-    } else if (hasFramebuffer) {
+    if (hasFramebuffer) {
       pool.getFrameBuffer()!.release()
     }
     if ((pool as any).m_atlas) (pool as any).m_atlas?.flush?.()
@@ -311,9 +241,7 @@ export class DrawPoolManager {
     if (!pool || !pool.isEnabled()) return
     this.drawObjects(pool)
 
-    // Skip FB blit when bypassing (first 3 frames for MAP)
-    const bypassFB = pool.hasFrameBuffer() && type === DrawPoolType.MAP && this.m_drawFrameCount <= 3
-    if (pool.hasFrameBuffer() && !bypassFB) {
+    if (pool.hasFrameBuffer()) {
       g_painter.resetState()
       if (pool.m_beforeDraw) pool.m_beforeDraw()
       pool.getFrameBuffer()!.draw()

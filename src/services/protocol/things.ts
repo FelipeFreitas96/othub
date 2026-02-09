@@ -24,8 +24,10 @@ export async function loadThings(version: number | string = 860): Promise<Things
     t.version = v
     t.ready = false
 
-    const datUrl = `/public/things/${v}/tibia.dat`
-    const sprUrl = `/public/things/${v}/tibia.spr`
+    // Vite serves files from /public at the site root ("/"), not under "/public".
+    // Keep both case variants as fallback to support different file naming.
+    const datCandidates = [`/things/${v}/Tibia.dat`, `/things/${v}/tibia.dat`]
+    const sprCandidates = [`/things/${v}/Tibia.spr`, `/things/${v}/tibia.spr`]
 
     const looksLikeHtml = (buf: ArrayBuffer) => {
       const b = new Uint8Array(buf)
@@ -34,44 +36,58 @@ export async function loadThings(version: number | string = 860): Promise<Things
       return s4 === '<!do' || s4 === '<htm' || s4 === '<bod'
     }
 
-    try {
-      const datRes = await fetch(datUrl)
-      if (datRes.ok) {
-        const datBuf = await datRes.arrayBuffer()
-        const ct = datRes.headers.get('content-type') || ''
-        if (ct.includes('text/html') || looksLikeHtml(datBuf)) {
-          console.warn('[Things] DAT looks like HTML (wrong path/missing file):', { url: datRes.url || datUrl, contentType: ct })
-        } else {
-          t.types.loadDat(datBuf)
-          console.log('[Things] DAT loaded:', { version: v, signature: t.types.datSignature })
+    const loadBinaryFromCandidates = async (
+      label: 'DAT' | 'SPR',
+      urls: string[]
+    ): Promise<ArrayBuffer | null> => {
+      for (const url of urls) {
+        try {
+          const res = await fetch(url)
+          if (!res.ok) continue
+          const buf = await res.arrayBuffer()
+          const ct = res.headers.get('content-type') || ''
+          if (ct.includes('text/html') || looksLikeHtml(buf)) {
+            console.warn(`[Things] ${label} looks like HTML (wrong path/missing file):`, { url: res.url || url, contentType: ct })
+            continue
+          }
+          return buf
+        } catch {
+          // Try next candidate.
         }
+      }
+      return null
+    }
+
+    let datLoaded = false
+    try {
+      const datBuf = await loadBinaryFromCandidates('DAT', datCandidates)
+      if (datBuf) {
+        t.types.loadDat(datBuf)
+        datLoaded = true
+        console.log('[Things] DAT loaded:', { version: v, signature: t.types.datSignature })
       } else {
-        console.warn('[Things] Missing DAT:', { url: datUrl, status: datRes.status })
+        console.warn('[Things] Missing DAT:', { tried: datCandidates })
       }
     } catch (e) {
       console.error('[Things] DAT load failed:', e)
       console.log('[Things] DAT debug:', { version: v, signature: t.types.datSignature, counts: t.types.counts })
     }
 
+    let sprLoaded = false
     try {
-      const sprRes = await fetch(sprUrl)
-      if (sprRes.ok) {
-        const sprBuf = await sprRes.arrayBuffer()
-        const ct = sprRes.headers.get('content-type') || ''
-        if (ct.includes('text/html') || looksLikeHtml(sprBuf)) {
-          console.warn('[Things] SPR looks like HTML (wrong path/missing file):', { url: sprRes.url || sprUrl, contentType: ct })
-        } else {
-          t.sprites.loadSpr(sprBuf)
-          console.log('[Things] SPR loaded:', { version: v, signature: t.sprites.signature, sprites: t.sprites.spriteCount })
-        }
+      const sprBuf = await loadBinaryFromCandidates('SPR', sprCandidates)
+      if (sprBuf) {
+        t.sprites.loadSpr(sprBuf)
+        sprLoaded = true
+        console.log('[Things] SPR loaded:', { version: v, signature: t.sprites.signature, sprites: t.sprites.spriteCount })
       } else {
-        console.warn('[Things] Missing SPR:', { url: sprUrl, status: sprRes.status })
+        console.warn('[Things] Missing SPR:', { tried: sprCandidates })
       }
     } catch (e) {
       console.error('[Things] SPR load failed:', e)
     }
 
-    t.ready = true
+    t.ready = datLoaded && sprLoaded
     return t
   } catch (e) {
     console.error('[Things] Failed to load things:', e)

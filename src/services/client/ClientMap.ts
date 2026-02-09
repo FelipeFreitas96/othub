@@ -213,10 +213,10 @@ export class ClientMap {
     while (tilePos.coveredUp(1) && tilePos.z >= firstFloor) {
       let covered = true
       let done = false
-      // Check is Top Ground – OTC: getTile(tilePos.translated(x, x)) for x,y in 0..1 (so (0,0) and (1,1))
+      // Check is Top Ground – OTC: getTile(tilePos.translated(x, y)) for x,y in 0..1
       for (let x = 0; x < 2 && !done; x++) {
         for (let y = 0; y < 2 && !done; y++) {
-          const tile = this.getTile(tilePos.translated(x, x))
+          const tile = this.getTile(tilePos.translated(x, y))
           if (!tile || !tile.hasTopGround()) {
             covered = false
             done = true
@@ -285,8 +285,17 @@ export class ClientMap {
   }
 
   cleanTile(pos: Position) {
-    if (!pos) return
-    this.m_tiles.delete(this._key(pos.x, pos.y, pos.z))
+    const key = this._key(pos.x, pos.y, pos.z)
+    const tile = this.m_tiles.get(key)
+    if (!tile) {
+      return
+    }
+
+    tile.clean()
+    if (tile.canErase()) {
+      this.m_tiles.delete(key)
+    }
+    this.notificateTileUpdate(pos, null, 'clean')
   }
 
   /** OTC: Map::notificateCameraMove(const Point& offset) – map.cpp L105-113. */
@@ -305,13 +314,13 @@ export class ClientMap {
     }
   }
 
-  notificateTileUpdate(pos: Position, thing: Thing, operation: string) {
+  notificateTileUpdate(pos: Position, thing: Thing | null, operation: string) {
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return
     for (const mapView of this.m_mapViews) {
       mapView.onTileUpdate?.(pos, thing, operation)
     }
 
-    if (thing.isItem()) {
+    if (thing?.isItem?.()) {
       // g_minimap
     }
   }
@@ -538,25 +547,27 @@ export class ClientMap {
   removeCreatureById(id: number | string) {
     if (id == null) return
     const numId = Number(id)
+    const known = this.m_knownCreatures.get(numId) ?? null
 
-    // Remove a criatura de todos os tiles onde ela possa estar (m_things e m_walkingCreatures)
-    // Mas NÃO remove da lista de conhecidas (m_knownCreatures) para não perder o estado de walk
+    // OTC: remove known creature entry and thing from tile.
+    if (known) {
+      this.removeThing(known as unknown as Thing)
+      this.m_knownCreatures.delete(numId)
+      return
+    }
+
+    // Desync fallback: remove lingering creature instances in tiles.
     for (const tile of this.m_tiles.values()) {
-      if (tile.m_things) {
-        tile.m_things = tile.m_things.filter(t => {
-          if (!t.isCreature()) return true
-          const cid = t.getId()
-          return cid == null || Number(cid) !== numId
-        })
-      }
-      // Also remove from walkingCreatures
-      if (tile.m_walkingCreatures) {
-        tile.m_walkingCreatures = tile.m_walkingCreatures.filter(c => {
-          const cid = c.getId?.()
-          return cid == null || Number(cid) !== numId
-        })
+      if (!tile?.m_things?.length) continue
+      for (let i = tile.m_things.length - 1; i >= 0; i--) {
+        const thing = tile.m_things[i]
+        if (!thing?.isCreature?.()) continue
+        if (Number(thing.getId?.()) !== numId) continue
+        this.removeThing(thing)
       }
     }
+
+    this.m_knownCreatures.delete(numId)
   }
 
   clean() {
@@ -585,7 +596,7 @@ export class ClientMap {
       for (let i = tile.m_things.length - 1; i >= 0; i--) {
         const t = tile.m_things[i]
         if (t.isCreature() && (t.getId() != null)) {
-          this.m_knownCreatures.delete(t.getId()!)
+          this.m_knownCreatures.delete(Number(t.getId()!))
           tile.m_things.splice(i, 1)
         }
       }
@@ -610,3 +621,4 @@ export class ClientMap {
 
 /** Singleton: instância única do mapa (OTC: g_map). */
 export const g_map = new ClientMap()
+

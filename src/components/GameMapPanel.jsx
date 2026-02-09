@@ -7,6 +7,7 @@ import { g_map } from '../services/client/ClientMap'
 import { g_drawPool } from '../services/graphics/DrawPoolManager'
 import { useWalkController } from '../modules/game_walk'
 import { g_graphics } from '../services/graphics/Graphics'
+import { g_player } from '../services/client/LocalPlayer'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 
@@ -26,6 +27,15 @@ export default function GameMapPanel() {
 
     // UIMap owns MapView and registers with g_map (OTC: m_drawDimension 18x14)
     uiMapRef.current = new UIMap(host, 18, 14)
+    uiMapRef.current.followCreature(g_player)
+
+    const ensureFollow = () => {
+      const mapView = uiMapRef.current?.getMapView?.()
+      if (!mapView) return
+      if (mapView.getFollowingCreature?.() !== g_player) {
+        uiMapRef.current?.followCreature?.(g_player)
+      }
+    }
 
     const drawAllPanesAndRender = () => {
       if (!uiMapRef.current || !host) return
@@ -51,11 +61,13 @@ export default function GameMapPanel() {
     })
 
     const onMap = () => {
+      ensureFollow()
       uiMapRef.current?.getMapView()?.requestUpdateVisibleTiles()
       drawAllPanesAndRender()
     }
 
     const onMapMove = () => {
+      ensureFollow()
       drawAllPanesAndRender()
     }
 

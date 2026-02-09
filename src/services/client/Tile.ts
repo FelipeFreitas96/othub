@@ -13,7 +13,7 @@ import { Creature } from './Creature'
 import { g_map } from './ClientMap'
 import { g_game } from './Game'
 import { Thing } from './types'
-import type { MapPosInfo, Point } from './types'
+import type { Point } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { ThingTypeManager } from '../things/thingTypeManager'
 import type { LightView } from './LightView'
@@ -113,6 +113,7 @@ export class Tile {
   getThings(): Thing[] { return this.m_things }
   isEmpty(): boolean { return this.m_things.length === 0 }
   isDrawable(): boolean { return this.m_things.length > 0 || this.m_effects.length > 0 }
+  canErase(): boolean { return this.m_things.length === 0 && this.m_effects.length === 0 && this.m_walkingCreatures.length === 0 }
 
   /** OTC: Tile::getGround() – returns first thing if it's ground */
   getGround(): Item | null {
@@ -142,8 +143,35 @@ export class Tile {
     const thingIndex = this.m_things.indexOf(thing)
     if (thingIndex === -1) return false
     this.m_things.splice(thingIndex, 1)
+    thing.setStackPos(-1)
+
+    if (thing.hasElevation?.()) {
+      this.m_elevation = Math.max(0, this.m_elevation - 1)
+    }
+
+    this.updateThingStackPos()
+
+    if (thing.hasElevation?.()) {
+      this.m_drawElevation = 0
+      for (const t of this.m_things) this.updateElevationForAdd(t)
+    }
+
     thing.onDisappear()
     return true
+  }
+
+  clean(): void {
+    while (this.m_things.length > 0) {
+      this.removeThing(this.m_things[0])
+    }
+    this.m_effects.length = 0
+    this.m_walkingCreatures.length = 0
+    this.m_drawTopAndCreature = true
+    this.m_drawElevation = 0
+    this.m_elevation = 0
+    this.m_thingTypeFlag = 0
+    this.m_isCovered = 0
+    this.m_isCompletelyCovered = 0
   }
 
   /** OTC: markHighlightedThing(Color::white) – stub */
@@ -286,14 +314,17 @@ export class Tile {
     return !(this.m_thingTypeFlag & NOT_PATHABLE)
   }
 
-  /** OTC Tile::isFullyOpaque() – tile is opaque se qualquer thing na stack for full ground. */
+  /** OTC Tile::isFullyOpaque() – conservative path: true for full ground. */
   isFullyOpaque(): boolean {
     return this.m_things.some((thing) => thing != null && !!thing.isFullGround?.())
   }
 
-  /** OTC Tile::hasTopGround() – tile has solid top (full ground); usamos mesmo critério que isFullyOpaque. */
-  hasTopGround(): boolean {
-    return this.isFullyOpaque()
+  /** OTC Tile::hasTopGround(ignoreBorder) – top-ground or top-ground-border. */
+  hasTopGround(ignoreBorder = false): boolean {
+    const ground = this.getGround()
+    if (ground && (ground.getWidth?.() ?? 1) * (ground.getHeight?.() ?? 1) === 4) return true
+    if (ignoreBorder) return false
+    return this.m_things.some((thing) => !!thing?.isGroundBorder?.() && ((thing.getWidth?.() ?? 1) * (thing.getHeight?.() ?? 1) === 4))
   }
 
   /** OTC Tile::isSingleDimension() – no thing with width or height != 1. */
@@ -318,7 +349,7 @@ export class Tile {
           // Atualiza os dados da criatura conhecida
           known.m_name = e.m_name ?? known.m_name
           known.m_healthPercent = e.m_healthPercent ?? known.m_healthPercent
-          known.m_direction = e.m_direction ?? known.m_direction
+          if (e.m_direction != null) known.setDirection(e.m_direction)
           known.m_outfit = e.m_outfit ?? known.m_outfit
           known.m_speed = e.m_speed ?? known.m_speed
           known.m_baseSpeed = e.m_baseSpeed ?? known.m_baseSpeed
@@ -384,9 +415,9 @@ export class Tile {
     return null
   }
 
-  /** OTC: isCommon() – item that is not ground, groundBorder, onBottom, onTop. */
+  /** OTC: isCommon() – !ground && !groundBorder && !onTop && !creature && !onBottom. */
   _isCommon(thing: Thing): boolean {
-    return !thing?.isGround?.() && !thing?.isGroundBorder?.() && !thing?.isOnBottom?.() && !thing?.isOnTop?.();
+    return !thing?.isGround?.() && !thing?.isGroundBorder?.() && !thing?.isOnBottom?.() && !thing?.isOnTop?.() && !thing?.isCreature?.()
   }
 
   hasCommonItem(): boolean {
@@ -481,8 +512,22 @@ export class Tile {
     return flagsRef.flags > 0
   }
 
-  /** OTC Tile::limitsFloorsView(isLookPossible) – tile blocks view to floors above. Stub: false. */
-  limitsFloorsView(_isLookPossible?: boolean): boolean {
+  /** OTC Tile::limitsFloorsView(isFreeView) – ground and walls limit the view to upper floors. */
+  limitsFloorsView(isFreeView = false): boolean {
+    for (const thing of this.m_things) {
+      // Iterate until first common item.
+      if (this._isCommon(thing)) break
+
+      const tt = thing?.getThingType?.() as any
+      const dontHide = tt?.dontHide ?? tt?.isDontHide?.() ?? false
+      const isGround = thing?.isGround?.() ?? false
+      const onBottom = thing?.isOnBottom?.() ?? false
+      const blocksProjectile = tt?.blockProjectile?.() ?? false
+      if (!dontHide && (isGround || (isFreeView ? onBottom : (onBottom && blocksProjectile)))) {
+        return true
+      }
+    }
+
     return false
   }
 
@@ -566,153 +611,95 @@ export class Tile {
    * OTC: drawThing(thing, dest, flags, drawElevation, lightView) – free function in tile.cpp
    * newDest = dest - drawElevation * scaleFactor; if (flags == DrawLights) thing->drawLight(newDest, lightView); else setDrawOrder(isSingleGround→FIRST, isSingleGroundBorder→SECOND, isEffect&&isDrawingEffectsOnTop→FOURTH, else THIRD); thing->draw(newDest, flags&DrawThings, lightView); updateElevation; resetDrawOrder().
    */
-  _drawThing(thing: Thing, drawFlags: number, drawElevationPx: number, steps: Function[], state?: any) {
+  _drawThing(thing: Thing, drawFlags: number, drawElevationPx: number, state?: any) {
     if (!g_drawPool.isValid()) return
-    const elev = drawElevationPx
-    const self = this
-    const viewX = state?.drawX ?? self.x
-    const viewY = state?.drawY ?? self.y
-    const TILE_PIXELS = 32
-    const centerPx = (v: number) => v * TILE_PIXELS + TILE_PIXELS / 2
-    const { DrawLights } = DrawFlags
-    steps.push(() => {
-      // OTC: luz é adicionada no draw da criatura (Creature::draw → lightView->addLightSource(dest + (animationOffset + Point(16,16))*scale)).
-      const lightView = state?.lightView as LightView | null | undefined
-      if (lightView && !(drawFlags & DrawLights)) {
-        if (thing instanceof Item) {
-          const tt = thing.getThingType()
-          if (tt?.hasLight?.()) {
-            const light = tt.getLight()
-            if (light) lightView.addLightSource(centerPx(viewX), centerPx(viewY), light, 1)
-          }
-        } else if (thing instanceof Creature) {
-          const light = thing.getLight()
-          if (light?.intensity > 0) {
-            const off = thing.getDrawOffset()
-            lightView.addLightSource(centerPx(viewX) + off.x, centerPx(viewY) - off.y, light, 1)
-          }
-        }
-      }
-      if (drawFlags & DrawLights) {
-        thing.drawLight?.(viewX, viewY, elev, 0, self.z, undefined)
-        return
-      }
-      if (thing?.isSingleGround?.()) g_drawPool.setDrawOrder(DrawOrder.FIRST)
-      else if (thing?.isSingleGroundBorder?.()) g_drawPool.setDrawOrder(DrawOrder.SECOND)
-      else if (thing?.isEffect?.() && g_drawPool.isDrawingEffectsOnTop()) g_drawPool.setDrawOrder(DrawOrder.FOURTH)
-      else g_drawPool.setDrawOrder(DrawOrder.THIRD)
+    const viewX = state?.drawX ?? this.x
+    const viewY = state?.drawY ?? this.y
+    const lightView = state?.lightView as LightView | null | undefined
+    const drawDest = {
+      x: viewX * TILE_PIXELS,
+      y: viewY * TILE_PIXELS,
+      drawElevationPx,
+      tileZ: this.z,
+    }
 
-      const drawDest = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS, drawElevationPx: elev, tileZ: self.z }
-      thing.draw(drawDest, !!(drawFlags & DrawFlags.DrawThings), lightView ?? undefined)
-      
-      if (state) self.updateElevation(thing, state)
-      g_drawPool.resetDrawOrder()
+    if (drawFlags & DrawFlags.DrawLights) {
+      thing.drawLight?.(drawDest, lightView ?? null)
+      return
+    }
 
-      if ((drawFlags & DrawFlags.DrawCreatureInfo) && thing.isCreature()) {
-        const creature = thing as Creature
-        const isWalkingHere = this.m_walkingCreatures?.some(c => c.getId?.() === creature.getId?.())
-        if (!isWalkingHere) {
-          const dest: Point = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS }
-          const mapRect: MapPosInfo = {
-            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: g_drawPool.w * TILE_PIXELS, height: g_drawPool.h * TILE_PIXELS },
-            drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
-            scaleFactor: g_drawPool.getScaleFactor?.() ?? 1,
-            horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
-            verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
-            isInRange: state.mapRect?.isInRange ?? (() => true),
-          }
-          creature.drawInformation(mapRect, dest, drawFlags)
-        }
-      }
-    })
+    if (thing?.isSingleGround?.()) g_drawPool.setDrawOrder(DrawOrder.FIRST)
+    else if (thing?.isSingleGroundBorder?.()) g_drawPool.setDrawOrder(DrawOrder.SECOND)
+    else if (thing?.isEffect?.() && g_drawPool.isDrawingEffectsOnTop()) g_drawPool.setDrawOrder(DrawOrder.FOURTH)
+    else g_drawPool.setDrawOrder(DrawOrder.THIRD)
+
+    thing.draw(drawDest, !!(drawFlags & DrawFlags.DrawThings), lightView ?? undefined)
+    if (state) this.updateElevation(thing, state)
+    g_drawPool.resetDrawOrder()
   }
 
   /**
    * OTC: Tile::drawCreature(dest, flags, forceDraw, drawElevation, lightView)
    * 1) Non-walking creatures from m_things (skip if isWalking()).
-   * 2) Walking creatures are drawn separately by MapView._drawWalkingCreatures().
+   * 2) Walking creatures are drawn separately by their walking tile.
    */
-  drawCreature(drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
+  drawCreature(drawFlags: number, forceDraw: boolean, state: any) {
     if (!g_drawPool.isValid()) return
     if (!forceDraw && !this.m_drawTopAndCreature) return
     const { DrawCreatures } = DrawFlags
     if (!(drawFlags & DrawCreatures)) return
 
-    // Draw only NON-walking creatures from m_things.
+    let localPlayerDrawed = false
+
     for (const thing of this.m_things) {
       if (!thing.isCreature?.() || thing.isWalking?.()) continue
-      
+
       // @ts-ignore
       if (thing.isLocalPlayer?.()) {
         const pos = thing.getPosition?.()
         if (pos && (pos.x !== this.x || pos.y !== this.y || pos.z !== this.z)) continue
+        localPlayerDrawed = true
       }
 
-      this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
+      this._drawThing(thing, drawFlags, state.drawElevationPx, state)
     }
 
-    // Draw walking creatures
-    // OTC: tile.cpp L152-156; luz como em Creature::draw → addLightSource(dest + (animationOffset + Point(16,16))*scale)
+    g_drawPool.setDrawOrder(DrawOrder.THIRD)
     for (const creature of this.m_walkingCreatures) {
-      const self = this
-      const viewX = state?.drawX ?? self.x
-      const viewY = state?.drawY ?? self.y
+      const viewX = state?.drawX ?? this.x
+      const viewY = state?.drawY ?? this.y
       const lightView = state?.lightView as LightView | null | undefined
-      steps.push(() => {
-        g_drawPool.setDrawOrder(DrawOrder.THIRD)
 
-        const drawOffset = creature.getDrawOffset()
-        const creaturePos = creature.getPosition()
-        const spriteSize = 32
+      const creaturePos = creature.getPosition()
+      const posDiffX = ((creaturePos?.x ?? this.x) - this.x) * TILE_PIXELS
+      const posDiffY = ((creaturePos?.y ?? this.y) - this.y) * TILE_PIXELS
+      const creatureDrawElevation = (creature as any).getDrawElevation?.() ?? 0
+      const cDestX = viewX * TILE_PIXELS + posDiffX - creatureDrawElevation
+      const cDestY = viewY * TILE_PIXELS + posDiffY - creatureDrawElevation
 
-        // OTC: cDest = dest + ((creature->getPosition() - m_position) * spriteSize) + walkOffset
-        const posDiffX = ((creaturePos?.x ?? self.x) - self.x) * spriteSize
-        const posDiffY = ((creaturePos?.y ?? self.y) - self.y) * spriteSize
-        const pixelOffsetX = posDiffX + drawOffset.x
-        const pixelOffsetY = posDiffY + drawOffset.y
+      if (drawFlags & DrawFlags.DrawLights) {
+        creature.drawLight?.({ x: cDestX, y: cDestY, drawElevationPx: 0, tileZ: this.z }, lightView ?? null)
+      } else {
+        creature.draw({ x: cDestX, y: cDestY, drawElevationPx: 0, tileZ: this.z, isWalkDraw: true }, true, lightView ?? undefined)
+      }
+    }
+    g_drawPool.resetDrawOrder()
 
-        if (lightView) {
-          const light = creature.getLight?.()
-          if (light?.intensity > 0) {
-            const px = viewX * spriteSize + spriteSize / 2 + pixelOffsetX
-            const py = viewY * spriteSize + spriteSize / 2 - pixelOffsetY
-            lightView.addLightSource(px, py, light, 1)
-          }
-        }
-
-        const creatureDest = {
-          x: viewX * spriteSize,
-          y: viewY * spriteSize,
-          drawElevationPx: state.drawElevationPx,
-          tileZ: self.z,
-          pixelOffsetX,
-          pixelOffsetY,
-          isWalkDraw: true,
-          drawFlags: state.drawFlags ?? 0,
-        }
-        creature.draw(creatureDest, true, lightView ?? undefined)
-        if (g_drawPool.isValid() && (self as any).m_drawTopAndCreature && creature.drawInformation) {
-          const dest: Point = { x: viewX * spriteSize, y: viewY * spriteSize }
-          const mapRect: MapPosInfo = {
-            rect: state.mapRect?.rect ?? { x: 0, y: 0, width: g_drawPool.w * spriteSize, height: g_drawPool.h * spriteSize },
-            drawOffset: state.mapRect?.drawOffset ?? { x: 0, y: 0 },
-            scaleFactor: g_drawPool.getScaleFactor?.() ?? 1,
-            horizontalStretchFactor: state.mapRect?.horizontalStretchFactor ?? 1,
-            verticalStretchFactor: state.mapRect?.verticalStretchFactor ?? 1,
-            isInRange: state.mapRect?.isInRange ?? (() => true),
-          }
-          creature.drawInformation(mapRect, dest, state.drawFlags ?? 0)
-        }
-        g_drawPool.resetDrawOrder()
-      })
+    const localPlayer =
+      Array.from(g_map.creatures.values()).find((c: any) => c?.isLocalPlayer?.()) ?? null
+    if (!localPlayerDrawed && localPlayer && !localPlayer.isWalking?.()) {
+      const pos = localPlayer.getPosition?.()
+      if (pos && pos.x === this.x && pos.y === this.y && pos.z === this.z) {
+        this._drawThing(localPlayer as Thing, drawFlags, state.drawElevationPx, state)
+      }
     }
   }
 
   /**
    * OTC: Tile::drawTop(dest, flags, forceDraw, drawElevation)
-   * drawElevation = 0; effects (drawThing → setDrawOrder); onTop items (drawThing).
+   * drawElevation = 0; effects then onTop items.
    */
-  drawTop(drawFlags: number, forceDraw: boolean, state: any, steps: Function[]) {
+  drawTop(drawFlags: number, forceDraw: boolean, state: any) {
     if (!forceDraw && !this.m_drawTopAndCreature) return
     const { DrawEffects, DrawOnTop } = DrawFlags
 
@@ -722,19 +709,17 @@ export class Tile {
       const viewX = state?.drawX ?? this.x
       const viewY = state?.drawY ?? this.y
       for (const effect of this.m_effects) {
-        const self = this
-        steps.push(() => {
-          g_drawPool.setDrawOrder(DrawOrder.FOURTH)
-          const effectDest = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS, drawElevationPx: 0, tileZ: self.z }
-          effect.draw(effectDest, true, state.lightView ?? undefined)
-          g_drawPool.resetDrawOrder()
-        })
+        g_drawPool.setDrawOrder(DrawOrder.FOURTH)
+        const effectDest = { x: viewX * TILE_PIXELS, y: viewY * TILE_PIXELS, drawElevationPx: 0, tileZ: this.z }
+        effect.draw(effectDest, true, state.lightView ?? undefined)
+        g_drawPool.resetDrawOrder()
       }
     }
+
     if (drawFlags & DrawOnTop && this.hasTopItem()) {
       for (const thing of this.m_things) {
         if (!thing.isOnTop?.()) continue
-        this._drawThing(thing, drawFlags, 0, steps, state)
+        this._drawThing(thing, drawFlags, 0, state)
       }
     }
   }
@@ -767,7 +752,6 @@ export class Tile {
     const viewY = dest.y / TILE_PIXELS
     this.m_lastDrawDest = { x: viewX, y: viewY }
     const state = { drawElevationPx: 0, drawX: viewX, drawY: viewY, lightView: lightView ?? null, drawFlags }
-    const steps: Function[] = []
 
     // 1) OTC: for (thing : m_things) { if (!ground && !groundBorder && !onBottom) break; drawThing(thing); updateElevation(thing); }
     state.drawElevationPx = 0
@@ -775,7 +759,7 @@ export class Tile {
       if (!thing.isGround?.() && !thing.isGroundBorder?.() && !thing.isOnBottom?.())
         break;
 
-      this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
+      this._drawThing(thing, drawFlags, state.drawElevationPx, state)
     }
 
     this.drawAttachedEffect(null, false)
@@ -785,20 +769,19 @@ export class Tile {
       for (let i = this.m_things.length - 1; i >= 0; i--) {
         const thing = this.m_things[i]
         if (!this._isCommon(thing)) continue
-        this._drawThing(thing, drawFlags, state.drawElevationPx, steps, state)
+        this._drawThing(thing, drawFlags, state.drawElevationPx, state)
       }
     }
 
     // 3) OTC: drawCreature(dest, flags, false, drawElevation)
-    this.drawCreature(drawFlags, false, state, steps)
+    this.drawCreature(drawFlags, false, state)
 
     // 4) OTC: drawTop(dest, flags, false, drawElevation)
-    this.drawTop(drawFlags, false, state, steps)
+    this.drawTop(drawFlags, false, state)
 
     this.drawAttachedEffect(null, true)
     this.drawAttachedParticlesEffect()
 
-    for (const step of steps) step()
   }
 }
 

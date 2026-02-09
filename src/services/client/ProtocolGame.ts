@@ -62,11 +62,13 @@ export class ProtocolGame {
 
       const onError = (error: any) => {
         cleanup()
+        if (this.m_gameInitialized) g_game.processGameEnd()
         resolve({ ok: false, message: error?.message || 'Connection error' })
       }
 
       const onDisconnect = ({ reason }: { reason?: string } = {}) => {
         cleanup()
+        if (this.m_gameInitialized) g_game.processGameEnd()
         resolve({ ok: false, message: reason || 'Connection closed' })
       }
 
@@ -333,4 +335,3 @@ export class ProtocolGame {
     this.m_connection.send(msg.getRawBuffer())
   }
 }
-

@@ -3,14 +3,14 @@
  * Port of src/client/outfit.h + outfit.cpp
  */
 
-import { ThingCategory } from './Const'
+import { ThingCategory } from '../things/thingType'
 import { Color } from './types'
 
 const HSI_SI_VALUES = 7
 const HSI_H_STEPS = 19
 
 export class Outfit {
-  private m_category: ThingCategory = ThingCategory.ThingInvalidCategory
+  private m_category: ThingCategory = ThingCategory.Invalid
   private m_temp: boolean = false
   private m_id: number = 0
   private m_auxId: number = 0
@@ -180,10 +180,10 @@ export class Outfit {
   getAddons(): number { return this.m_addons }
   hasMount(): boolean { return this.m_mount > 0 }
   getCategory(): ThingCategory { return this.m_category }
-  isCreature(): boolean { return this.m_category === ThingCategory.ThingCategoryCreature }
-  isInvalid(): boolean { return this.m_category === ThingCategory.ThingInvalidCategory }
-  isEffect(): boolean { return this.m_category === ThingCategory.ThingCategoryEffect }
-  isItem(): boolean { return this.m_category === ThingCategory.ThingCategoryItem }
+  isCreature(): boolean { return this.m_category === ThingCategory.Creature }
+  isInvalid(): boolean { return this.m_category === ThingCategory.Invalid }
+  isEffect(): boolean { return this.m_category === ThingCategory.Effect }
+  isItem(): boolean { return this.m_category === ThingCategory.Item }
   isTemp(): boolean { return this.m_temp }
   getHeadColor(): number { return this.m_headColor }
   getBodyColor(): number { return this.m_bodyColor }

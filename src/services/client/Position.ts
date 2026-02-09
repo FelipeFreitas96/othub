@@ -169,53 +169,86 @@ export class Position {
     return new Position(this.x - other.x, this.y - other.y, this.z - other.z)
   }
 
-  /** OTC Position::isValid() – not the invalid sentinel (0xFFFF, 0xFFFF, 0xFF). */
-  isValid(): boolean {
-    return !(this.x === 0xFFFF && this.y === 0xFFFF && this.z === 0xFF)
-  }
-
   // Equality check
   equals(other: Position | { x: number, y: number, z: number } | null | undefined): boolean {
     if (!other) return false
     return this.x === other.x && this.y === other.y && this.z === other.z
   }
 
-  // Check if in range
-  isInRange(pos: Position, xRange: number, yRange: number, ignoreZ: boolean = false): boolean {
-    if (pos.z !== this.z && !ignoreZ) return false
-    return Math.abs(this.x - pos.x) <= xRange && Math.abs(this.y - pos.y) <= yRange
+  // OTC overloads:
+  // isInRange(pos, xRange, yRange, ignoreZ?)
+  // isInRange(pos, minXRange, maxXRange, minYRange, maxYRange, ignoreZ?)
+  isInRange(pos: Position, xRange: number, yRange: number, ignoreZ?: boolean): boolean
+  isInRange(pos: Position, minXRange: number, maxXRange: number, minYRange: number, maxYRange: number, ignoreZ?: boolean): boolean
+  isInRange(
+    pos: Position,
+    a: number,
+    b: number,
+    cOrIgnore: number | boolean = false,
+    d?: number,
+    e?: boolean
+  ): boolean {
+    const usingAsymmetricRanges = typeof cOrIgnore === 'number' && typeof d === 'number'
+    const ignoreZ = usingAsymmetricRanges ? (e ?? false) : (typeof cOrIgnore === 'boolean' ? cOrIgnore : false)
+    const checkPos = pos.clone()
+
+    if (checkPos.z !== this.z) {
+      if (!ignoreZ) return false
+      if (!checkPos.coveredUp(checkPos.z - this.z)) return false
+    }
+
+    if (usingAsymmetricRanges) {
+      const minXRange = a
+      const maxXRange = b
+      const minYRange = cOrIgnore as number
+      const maxYRange = d as number
+      return (
+        checkPos.x >= this.x - minXRange &&
+        checkPos.x <= this.x + maxXRange &&
+        checkPos.y >= this.y - minYRange &&
+        checkPos.y <= this.y + maxYRange
+      )
+    }
+
+    const xRange = a
+    const yRange = b
+    return Math.abs(this.x - checkPos.x) <= xRange && Math.abs(this.y - checkPos.y) <= yRange && this.z === checkPos.z
   }
 
   // Move up/down floors
   up(n: number = 1): boolean {
     const newZ = this.z - n
-    if (newZ < 0) return false
+    if (newZ < 0 || newZ > 15) return false
     this.z = newZ
     return true
   }
 
   down(n: number = 1): boolean {
     const newZ = this.z + n
-    if (newZ > 15) return false
+    if (newZ < 0 || newZ > 15) return false
     this.z = newZ
     return true
   }
 
   // Covered up/down (with x,y adjustment)
   coveredUp(n: number = 1): boolean {
+    const newX = this.x + n
+    const newY = this.y + n
     const newZ = this.z - n
-    if (newZ < 0) return false
-    this.x += n
-    this.y += n
+    if (newX < 0 || newX > 0xFFFF || newY < 0 || newY > 0xFFFF || newZ < 0 || newZ > 15) return false
+    this.x = newX
+    this.y = newY
     this.z = newZ
     return true
   }
 
   coveredDown(n: number = 1): boolean {
+    const newX = this.x - n
+    const newY = this.y - n
     const newZ = this.z + n
-    if (newZ > 15) return false
-    this.x -= n
-    this.y -= n
+    if (newX < 0 || newX > 0xFFFF || newY < 0 || newY > 0xFFFF || newZ < 0 || newZ > 15) return false
+    this.x = newX
+    this.y = newY
     this.z = newZ
     return true
   }

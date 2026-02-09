@@ -191,7 +191,25 @@ export class ProtocolGameParse {
         const creatureId = msg.getU32()
         creature = g_map.getCreatureById(creatureId) as Creature | null
         if (!creature) {
-          console.warn('ProtocolGame::getCreature: server said that a creature is known, but it\'s not')
+          // Desync recovery: rebuild known-creature map entry from tile stack when possible.
+          const found = g_map.findCreaturePosition?.(creatureId)
+          if (found) {
+            const thing = g_map.getThing(new Position(found.pos.x, found.pos.y, found.pos.z), found.stackPos)
+            if (thing?.isCreature?.()) {
+              creature = thing as Creature
+              g_map.addCreature(creature)
+            }
+          }
+
+          // If still missing, create a placeholder creature so subsequent packets stay in sync.
+          if (!creature) {
+            creature = Number(creatureId) === Number(g_player.getId())
+              ? g_player
+              : new Creature({ id: creatureId, name: '' })
+            creature.onCreate?.()
+            creature.setId(creatureId)
+            g_map.addCreature(creature)
+          }
         }
       } else {
         const removeId = msg.getU32()
@@ -347,9 +365,6 @@ export class ProtocolGameParse {
       throw new Error('ProtocolGame::getCreature: invalid creature opcode')
     }
 
-    if (creature && g_player.getId() != null && Number(creature.getId()) === Number(g_player.getId())) {
-      creature.setCameraFollowing(true)
-    }
     return creature
   }
 
@@ -1218,9 +1233,7 @@ export class ProtocolGameParse {
       }
       return new Item({ id, subtype }, things.types)
     }
-    const tile = g_map.getOrCreateTile(tilePos)
-    if (!tile) return
-    tile.m_things = []
+    g_map.cleanTile(tilePos)
     let gotEffect = false
     for (let stackPos = 0; stackPos < 256; stackPos++) {
       if (!msg.canRead(2)) break
@@ -1235,7 +1248,10 @@ export class ProtocolGameParse {
         continue
       }
       const thing = readThing()
-      if (thing) tile.m_things.push(thing)
+      if (thing?.isCreature?.() && thing.getId?.() === g_player.getId?.()) {
+        g_player.resetPreWalk?.()
+      }
+      if (thing) g_map.addThing(thing, tilePos, stackPos)
     }
   }
 
@@ -1701,6 +1717,10 @@ export class ProtocolGameParse {
       Creature.speedA = msg.getDouble()
       Creature.speedB = msg.getDouble()
       Creature.speedC = msg.getDouble()
+    } else {
+      Creature.speedA = 0
+      Creature.speedB = 0
+      Creature.speedC = 0
     }
 
     let canReportBugs = false
@@ -1908,9 +1928,7 @@ export class ProtocolGameParse {
       }
       return skip
     }
-    // 1:1 protocolgameparse.cpp setMapDescription (L1398).
-    // Offset (z-nz) no C++: andar abaixo fica em (x-1,y-1). Nosso snapshot/MapStore espera (ox+x+dz, oy+y+dz) = baixo-direita para dz>0.
-    // Por isso usamos offset = nz - z aqui: andares abaixo (nz>z) ficam em (x+1,y+1) e batem com snapshotFloor.
+    // 1:1 protocolgameparse.cpp setMapDescription (L1398): offset = z - nz.
     const setMapDescription = (x: number, y: number, z: number, width: number, height: number) => {
       const seaFloor = 7
       const undergroundAware = 2
@@ -1927,7 +1945,7 @@ export class ProtocolGameParse {
       }
       let skip = 0
       for (let nz = startz; nz !== endz + zstep; nz += zstep) {
-        skip = setFloorDescription(x, y, nz, width, height, nz - z, skip)
+        skip = setFloorDescription(x, y, nz, width, height, z - nz, skip)
       }
       return { startz, endz }
     }
@@ -1961,24 +1979,10 @@ export class ProtocolGameParse {
       window.dispatchEvent(new CustomEvent('ot:teleport', { detail: { pos, oldPos } }))
     }
 
-    // OTC: walk triggered in Creature::onAppear (addThing); follow + notificate after onAppear
-    if (oldPos && (oldPos.x !== pos.x || oldPos.y !== pos.y || oldPos.z !== pos.z)) {
-      g_player.onPositionChangeServer?.(pos, oldPos)
-      const playerId = g_player.getId()
-      if (playerId != null) {
-        const creature = g_map.getCreatureById(playerId)
-        if (creature) {
-          const mapView = g_map.getMapView(0)
-          if (mapView && (mapView as any).followCreature) (mapView as any).followCreature(creature)
-          if (creature.isCameraFollowing()) g_map.notificateCameraMove(creature.getDrawOffset())
-        }
-      }
-    }
+    // OTC: movement sync for creatures comes from addThing/onAppear and map center updates.
+    // Avoid extra server-position callbacks here to prevent duplicate walk/camera corrections.
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:map'))
-      if (oldPos && (oldPos.x !== pos.x || oldPos.y !== pos.y || oldPos.z !== pos.z)) {
-        window.dispatchEvent(new CustomEvent('ot:mapMove'))
-      }
     }
   }
 
@@ -1991,15 +1995,13 @@ export class ProtocolGameParse {
       }
       const tt = things.types.getItem(id)
       let subtype = 1
-      if (tt && (tt.stackable || tt.fluid || tt.splash || tt.chargeable)) {
+      if (tt && (tt.isStackable() || tt.isFluidContainer() || tt.isSplash() || tt.isChargeable())) {
         subtype = isFeatureEnabled('GameCountU16') ? msg.getU16() : msg.getU8()
       }
       return new Item({ id, subtype }, things.types)
     }
     const setTileDescription = (tilePos: Position) => {
-      const tile = g_map.getOrCreateTile(tilePos)
-      if (!tile) return 0
-      tile.m_things = []
+      g_map.cleanTile(tilePos)
       let gotEffect = false
       for (let stackPos = 0; stackPos < 256; stackPos++) {
         if (!msg.canRead(2)) break
@@ -2014,7 +2016,10 @@ export class ProtocolGameParse {
           continue
         }
         const thing = readThing()
-        if (thing) tile.m_things.push(thing)
+        if (thing?.isCreature?.() && thing.getId?.() === g_player.getId?.()) {
+          g_player.resetPreWalk?.()
+        }
+        if (thing) g_map.addThing(thing, tilePos, stackPos)
       }
       return 0
     }
@@ -2055,7 +2060,6 @@ export class ProtocolGameParse {
     const { w } = g_map.getAwareDims()
     this.parseMapSlice(msg, pos.x - range.left, pos.y - range.top, pos.z, w, 1)
     g_map.setCenter(pos)
-    g_player.onPositionChangeServer(pos, oldCenter)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
     }
@@ -2069,7 +2073,6 @@ export class ProtocolGameParse {
     const { h } = g_map.getAwareDims()
     this.parseMapSlice(msg, pos.x + range.right, pos.y - range.top, pos.z, 1, h)
     g_map.setCenter(pos)
-    g_player.onPositionChangeServer(pos, oldCenter)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
     }
@@ -2096,7 +2099,6 @@ export class ProtocolGameParse {
     const { h } = g_map.getAwareDims()
     this.parseMapSlice(msg, pos.x - range.left, pos.y - range.top, pos.z, 1, h)
     g_map.setCenter(pos)
-    g_player.onPositionChangeServer(pos, oldCenter)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:mapMove', { detail: { pos, fromPos: oldCenter } }))
     }

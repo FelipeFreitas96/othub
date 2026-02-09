@@ -4,7 +4,7 @@ import { loadThings } from '../protocol/things'
 import { g_map } from './ClientMap'
 import { getProtocolInfo } from '../protocol/protocolInfo'
 import { GameEventsEnum } from './Const'
-import { LocalPlayer } from './LocalPlayer'
+import { g_player, LocalPlayer } from './LocalPlayer'
 import { Direction, DirectionType } from './Position'
 
 let clientVersion = 860
@@ -82,6 +82,15 @@ export class Game {
     }
   }
 
+  processGameEnd() {
+    this.m_protocolGame = null
+    g_map.cleanDynamicThings()
+    g_player.resetForLogin()
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(`g_game:${GameEventsEnum.onGameEnd}`))
+    }
+  }
+
   processConnectionError(error: any) {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(`g_game:${GameEventsEnum.onConnectionError}`, { detail: error }))
@@ -140,6 +149,9 @@ export class Game {
     if (!worldHost || !characterName) {
       return { ok: false, message: 'Invalid character/world data.' }
     }
+
+    // OTC creates a fresh LocalPlayer each login. Keep singleton identity, reset all state.
+    g_player.resetForLogin(characterName)
 
     this.m_protocolGame = new ProtocolGame()
     this.m_characterName = characterName

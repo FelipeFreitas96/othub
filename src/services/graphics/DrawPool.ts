@@ -530,7 +530,7 @@ export class DrawPool {
       }
     }
 
-    // this.resetOnlyOnceParameters()
+    this.resetOnlyOnceParameters()
   }
 
   /** OTC: addCoords(CoordsBuffer& buffer, const DrawMethod& method) */
@@ -560,7 +560,22 @@ export class DrawPool {
     if (state.clipRect && (state.clipRect.x != null || state.clipRect.width != null)) h = hashCombine(h, rectHash(state.clipRect))
     if (state.shaderProgram) h = hashCombine(h, 1)
     if (state.transformMatrix != null) h = hashCombine(h, 2)
-    if (color && ((color as any).r !== 1 || (color as any).g !== 1 || (color as any).b !== 1)) h = hashCombine(h, ((color as any).r ?? 0) + ((color as any).g ?? 0) * 2 + ((color as any).b ?? 0) * 3)
+    if (color) {
+      const toByte = (v: number, fallback: number): number => {
+        if (!Number.isFinite(v)) return fallback
+        return Math.max(0, Math.min(255, Math.round(v <= 1 ? v * 255 : v)))
+      }
+      const cr = toByte(Number((color as any).r), 255)
+      const cg = toByte(Number((color as any).g), 255)
+      const cb = toByte(Number((color as any).b), 255)
+      const ca = toByte(Number((color as any).a), 255)
+      if (cr !== 255 || cg !== 255 || cb !== 255 || ca !== 255) {
+        h = hashCombine(h, cr)
+        h = hashCombine(h, cg)
+        h = hashCombine(h, cb)
+        h = hashCombine(h, ca)
+      }
+    }
     if (texture) h = hashCombine(h, typeof texture.hash === 'function' ? texture.hash() : (texture.id ?? 0))
     state.hash = h
 

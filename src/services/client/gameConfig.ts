@@ -18,6 +18,9 @@ export const EFFECT_TICKS_PER_FRAME = 75
 
 /** OTC: getTileTransparentFloorViewRange() – range for transparent floor view. */
 export const TILE_TRANSPARENT_FLOOR_VIEW_RANGE = 1
+export const FORCE_NEW_WALKING_FORMULA = true
+export const CREATURE_DIAGONAL_WALK_SPEED = 3
+export const PLAYER_DIAGONAL_WALK_SPEED = 3
 
 export const g_gameConfig = {
   getSpriteSize: () => TILE_SPRITE_SIZE,
@@ -29,4 +32,7 @@ export const g_gameConfig = {
   getMapAwareUndergroundFloorRange: () => MAP_AWARE_UNDERGROUND_FLOOR_RANGE,
   getEffectTicksPerFrame: () => EFFECT_TICKS_PER_FRAME,
   getTileTransparentFloorViewRange: () => TILE_TRANSPARENT_FLOOR_VIEW_RANGE,
+  isForcingNewWalkingFormula: () => FORCE_NEW_WALKING_FORMULA,
+  getCreatureDiagonalWalkSpeed: () => CREATURE_DIAGONAL_WALK_SPEED,
+  getPlayerDiagonalWalkSpeed: () => PLAYER_DIAGONAL_WALK_SPEED,
 }

@@ -23,9 +23,38 @@ export interface Light {
     color: number
 }
 
+/** OTC Size – width/height in pixels or tiles depending on context. */
+export interface Size {
+  width: number
+  height: number
+}
+
+/** OTC Color constants used by legacy client modules (packed RGB). */
+export const Color = {
+  alpha: 0x000000,
+  white: 0xFFFFFF,
+} as const
+
+/** OTC Timer – minimal utility with restart()/ticksElapsed(). */
+export class Timer {
+  private m_startTime: number
+
+  constructor() {
+    this.m_startTime = Date.now()
+  }
+
+  restart(): void {
+    this.m_startTime = Date.now()
+  }
+
+  ticksElapsed(): number {
+    return Date.now() - this.m_startTime
+  }
+}
+
 export interface MapView {
     onCameraMove(offset: { x: number, y: number }): void
-    onTileUpdate(pos: Position, thing: Thing, operation: string): void
+    onTileUpdate(pos: Position, thing: Thing | null, operation: string): void
     requestUpdateVisibleTiles?(): void
 }
 

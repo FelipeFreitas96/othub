@@ -14,19 +14,30 @@ import * as THREE from 'three'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { g_painter, Rect } from '../graphics/Painter'
 import { DrawPool, DrawPoolType, DrawOrder } from '../graphics/DrawPool'
-import { DEFAULT_DRAW_FLAGS, DRAW_THINGS_FLAGS } from '../graphics/drawFlags'
-import { g_player } from './LocalPlayer'
+import { DRAW_THINGS_FLAGS, DrawFlags } from '../graphics/drawFlags'
 import { g_map } from './ClientMap'
 import { g_dispatcher } from '../framework/EventDispatcher'
-import { Position } from './Position'
+import { Position, Direction } from './Position'
 import { LightView } from './LightView'
 import { Creature } from './Creature'
 import { Tile } from './Tile'
-import { getThings } from '../protocol/things'
-import type { Point } from './types'
+import type { MapPosInfo, Point } from './types'
 import { g_gameConfig } from './gameConfig'
 
 const TILE_PIXELS = 32
+
+interface AwareRange {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+interface MapPosInfoInternal extends MapPosInfo {
+  srcRect: Rect
+  camera: Position
+  awareRange: AwareRange
+}
 
 export class MapView {
   /** OTC: m_visibleDimension – área visível (ex.: 15x11). */
@@ -42,6 +53,12 @@ export class MapView {
   m_cachedVisibleTiles: any[]
   /** OTC mapview.h: m_updateVisibleTiles – true quando precisa rodar updateVisibleTiles(). */
   m_updateVisibleTiles: boolean
+  /** OTC mapview.h: m_updateMapPosInfo – true quando srcRect/drawOffset precisam de recálculo. */
+  m_updateMapPosInfo: boolean = true
+  /** OTC mapview.h: m_moveOffset – offset de câmera para pan manual. */
+  m_moveOffset: Point = { x: 0, y: 0 }
+  /** OTC mapview.h: m_follow – quando false usa m_customCameraPosition em vez de m_followingCreature. */
+  m_follow: boolean = true
   m_smoothCameraX: number | null
   m_smoothCameraY: number | null
   m_fitAwareArea: boolean
@@ -67,10 +84,20 @@ export class MapView {
   m_lightView: LightView
   /** OTC: m_virtualCenterOffset = (drawDimension/2 - Size(1)).toPoint() – mapview.cpp L489. */
   m_virtualCenterOffset: Point = { x: 0, y: 0 }
+  /** OTC mapview.h: cache de viewport por direção + viewport atual. */
+  private m_viewPortDirection: Map<number, AwareRange> = new Map()
+  private m_viewport: AwareRange = { left: 0, top: 0, right: 0, bottom: 0 }
   /** OTC mapview.h: m_posInfo – rect e srcRect para preDraw (UIMap::draw). */
-  m_posInfo: { rect: Rect, srcRect: Rect } = {
+  m_posInfo: MapPosInfoInternal = {
     rect: { x: 0, y: 0, width: 1, height: 1 },
     srcRect: { x: 0, y: 0, width: 1, height: 1 },
+    drawOffset: { x: 0, y: 0 },
+    horizontalStretchFactor: 1,
+    verticalStretchFactor: 1,
+    scaleFactor: 1,
+    camera: new Position(),
+    awareRange: { left: 8, top: 6, right: 9, bottom: 7 },
+    isInRange: (_pos: any): boolean => false,
   }
   /** OTC: m_floorViewMode – Otc::ALWAYS_WITH_TRANSPARENCY etc. 0 = normal. */
   m_floorViewMode: number = 0
@@ -127,9 +154,14 @@ export class MapView {
     this.m_pool.setMap(null)
     this.m_pool.w = this.m_drawDimension.width
     this.m_pool.h = this.m_drawDimension.height
+    this.m_pool.setScaleFactor(1)
     const bufferSize = { width: this.m_drawDimension.width * TILE_PIXELS, height: this.m_drawDimension.height * TILE_PIXELS }
     this.m_pool.getFrameBuffer()?.resize(bufferSize)
     this.m_rectDimension = { x: 0, y: 0, width: bufferSize.width, height: bufferSize.height }
+    this.m_posInfo.scaleFactor = this.m_pool.getScaleFactor()
+    this.m_posInfo.camera = this.getCameraPosition()
+    this.rebuildAwareRangeCache()
+    this.m_posInfo.isInRange = (pos: any, ignoreZ = false): boolean => this.isPositionInRange(pos, ignoreZ, false)
     // Do not share this.m_pool with FOREGROUND_MAP/CREATURE_INFORMATION: each preDraw calls release()
     // and overwrites m_objectsDraw[0], so the last preDraw would leave the MAP pool with only 1 object.
 
@@ -182,6 +214,98 @@ export class MapView {
     }
   }
 
+  private rebuildAwareRangeCache(): void {
+    const aware = g_map.getAwareRange()
+    const maxLeft = Math.max(0, Math.floor(this.m_drawDimension.width / 2) - 1)
+    const maxTop = Math.max(0, Math.floor(this.m_drawDimension.height / 2) - 1)
+    const left = Math.min(aware.left ?? 8, maxLeft)
+    const top = Math.min(aware.top ?? 6, maxTop)
+    this.m_posInfo.awareRange = {
+      left,
+      top,
+      right: left + 1,
+      bottom: top + 1,
+    }
+    this.updateViewportDirectionCache()
+    this.updateViewport(Direction.InvalidDirection)
+  }
+
+  private isPositionInRange(pos: any, ignoreZ = false, extended = false): boolean {
+    if (!pos) return false
+    const p = pos instanceof Position ? pos : Position.from(pos)
+    const camera = this.m_posInfo.camera
+    if (!p.isValid?.() || !camera?.isValid?.()) return false
+    const aware = this.m_posInfo.awareRange
+    if (extended) {
+      return camera.isInRange(p, aware.left, aware.right, aware.top, aware.bottom, ignoreZ)
+    }
+    return camera.isInRange(p, aware.left - 1, aware.right - 2, aware.top - 1, aware.bottom - 2, ignoreZ)
+  }
+
+  /** OTC mapview.cpp L898-939: recalcula viewport para cada direção de movimento. */
+  private updateViewportDirectionCache(): void {
+    const aware = this.m_posInfo.awareRange
+    const directions = [
+      Direction.North,
+      Direction.East,
+      Direction.South,
+      Direction.West,
+      Direction.NorthEast,
+      Direction.SouthEast,
+      Direction.SouthWest,
+      Direction.NorthWest,
+      Direction.InvalidDirection,
+    ]
+
+    for (const dir of directions) {
+      const vp: AwareRange = {
+        top: aware.top,
+        right: aware.right,
+        bottom: aware.top,
+        left: aware.right,
+      }
+
+      switch (dir) {
+        case Direction.North:
+        case Direction.South:
+          vp.top += 1
+          vp.bottom += 1
+          break
+        case Direction.West:
+        case Direction.East:
+          vp.right += 1
+          vp.left += 1
+          break
+        case Direction.NorthEast:
+        case Direction.SouthEast:
+        case Direction.NorthWest:
+        case Direction.SouthWest:
+          vp.left += 1
+          vp.bottom += 1
+          vp.top += 1
+          vp.right += 1
+          break
+        case Direction.InvalidDirection:
+          vp.left -= 1
+          vp.right -= 1
+          break
+        default:
+          break
+      }
+
+      this.m_viewPortDirection.set(dir, vp)
+    }
+  }
+
+  /** OTC mapview.h: updateViewport(direction). */
+  private updateViewport(dir: number = Direction.InvalidDirection): void {
+    const viewport =
+      this.m_viewPortDirection.get(dir) ??
+      this.m_viewPortDirection.get(Direction.InvalidDirection) ??
+      this.m_posInfo.awareRange
+    this.m_viewport = { ...viewport }
+  }
+
   getVisibleDimension() { return this.m_visibleDimension }
   getCachedFirstVisibleFloor() { return this.m_cachedFirstVisibleFloor }
   getCachedLastVisibleFloor() { return this.m_cachedLastVisibleFloor }
@@ -191,7 +315,7 @@ export class MapView {
    * Converte Position (mapa 3D) em Point (2D em pixels). relativePosition = câmera por padrão.
    */
   transformPositionTo2D(position: Position, relativePosition?: Position): Point {
-    const rel = relativePosition ?? this.getCameraPosition()
+    const rel = relativePosition ?? this.m_posInfo.camera ?? this.getCameraPosition()
     const vcx = this.m_virtualCenterOffset.x
     const vcy = this.m_virtualCenterOffset.y
     return {
@@ -207,10 +331,9 @@ export class MapView {
    * else if (!m_moveOffset.isNull()) drawOffset += m_moveOffset * scaleFactor;
    * srcVisible = m_visibleDimension * m_tileSize; srcSize = destSize scaled to srcVisible (KeepAspectRatio);
    * drawOffset += (srcVisible - srcSize) / 2; return Rect(drawOffset, srcSize);
-   * Retornamos Rect em unidades de mundo (x,y = offset da câmera; width,height = área visível em tiles).
+   * Retorna Rect em pixels do framebuffer (igual OTC).
    */
   calcFramebufferSource(destSize?: { width: number, height: number }): { x: number, y: number, width: number, height: number } {
-    const scaleFactor = 1 / TILE_PIXELS
     const drawW = this.m_drawDimension.width
     const drawH = this.m_drawDimension.height
     const visibleW = this.m_visibleDimension.width
@@ -224,12 +347,15 @@ export class MapView {
       const creature = this.getFollowingCreature()
       if (creature) {
         const walkOffset = creature.getWalkOffset()
-        // OTC: drawOffset += getWalkOffset() * scaleFactor; scaleFactor = m_tileSize/Otc::TILE_PIXELS (≈ 1)
-        drawOffsetPxX += walkOffset.x
-        drawOffsetPxY += walkOffset.y
+        const scale = this.m_pool.getScaleFactor?.() ?? 1
+        drawOffsetPxX += walkOffset.x * scale
+        drawOffsetPxY += walkOffset.y * scale
       }
+    } else if (this.m_moveOffset.x !== 0 || this.m_moveOffset.y !== 0) {
+      const scale = this.m_pool.getScaleFactor?.() ?? 1
+      drawOffsetPxX += this.m_moveOffset.x * scale
+      drawOffsetPxY += this.m_moveOffset.y * scale
     }
-    // else if (!m_moveOffset.isNull()) drawOffset += m_moveOffset * scaleFactor; // TODO: m_moveOffset
 
     const srcVisiblePxW = visibleW * TILE_PIXELS
     const srcVisiblePxH = visibleH * TILE_PIXELS
@@ -240,27 +366,32 @@ export class MapView {
       const destAspect = destSize.width / destSize.height
       const visibleAspect = srcVisiblePxW / srcVisiblePxH
       if (destAspect > visibleAspect) {
-        srcSizePxH = srcVisiblePxH
-        srcSizePxW = srcVisiblePxH * destAspect
-      } else {
         srcSizePxW = srcVisiblePxW
         srcSizePxH = srcVisiblePxW / destAspect
+      } else {
+        srcSizePxH = srcVisiblePxH
+        srcSizePxW = srcVisiblePxH * destAspect
       }
       drawOffsetPxX += (srcVisiblePxW - srcSizePxW) / 2
       drawOffsetPxY += (srcVisiblePxH - srcSizePxH) / 2
     }
 
+    srcSizePxW = Math.max(1, Math.round(srcSizePxW))
+    srcSizePxH = Math.max(1, Math.round(srcSizePxH))
+    drawOffsetPxX = Math.round(drawOffsetPxX)
+    drawOffsetPxY = Math.round(drawOffsetPxY)
+
     return {
-      x: drawOffsetPxX * scaleFactor,
-      y: drawOffsetPxY * scaleFactor,
-      width: srcSizePxW * scaleFactor,
-      height: srcSizePxH * scaleFactor,
+      x: drawOffsetPxX,
+      y: drawOffsetPxY,
+      width: srcSizePxW,
+      height: srcSizePxH,
     }
   }
 
   /** OTC MapView::isFollowingCreature() – true quando m_followingCreature está setado. */
   isFollowingCreature(): boolean {
-    return this.m_followingCreature != null
+    return this.m_followingCreature != null && this.m_follow
   }
 
   /** OTC MapView::getFollowingCreature() / m_followingCreature. */
@@ -268,20 +399,14 @@ export class MapView {
     return this.m_followingCreature
   }
 
-  /** OTC mapview.cpp L686-698: getCameraPosition() = m_followingCreature ? creature->getPosition() : m_customCameraPosition (ou central).
-   * During walk: use source position (m_lastStepFromPosition) so camera stays at (x,y) and character animates from (x,y) to (x+1,y).
-   * After walk: use getPosition() (destination).
-   */
+  /** OTC mapview.cpp L686-698: getCameraPosition() = following creature position or custom camera position. */
   getCameraPosition(): Position {
-    if (this.m_followingCreature) {
+    if (this.isFollowingCreature() && this.m_followingCreature) {
       const c = this.m_followingCreature as Creature
-      if (c.m_walking && c.m_lastStepFromPosition) {
-        return c.m_lastStepFromPosition.clone()
-      }
       const pos = c.getPosition()
       return pos ? pos.clone() : g_map.getCentralPosition()
     }
-    if (this.m_customCameraPosition) return this.m_customCameraPosition.clone()
+    if (this.m_customCameraPosition?.isValid?.()) return this.m_customCameraPosition.clone()
     return g_map.getCentralPosition()
   }
 
@@ -310,6 +435,7 @@ export class MapView {
     }
     if (this.m_followingCreature) this.m_followingCreature.setCameraFollowing(false)
     this.m_followingCreature = creature
+    this.m_follow = true
     creature.setCameraFollowing(true)
     this.m_lastCameraPosition = null
     this.requestUpdateVisibleTiles()
@@ -321,6 +447,7 @@ export class MapView {
       this.m_followingCreature.setCameraFollowing(false)
       this.m_followingCreature = null
     }
+    this.m_follow = false
     this.m_customCameraPosition = pos.clone()
     this.requestUpdateVisibleTiles()
   }
@@ -343,16 +470,62 @@ export class MapView {
     this.m_updateVisibleTiles = true
   }
 
+  /** OTC mapview.h: requestUpdateMapPosInfo() { m_updateMapPosInfo = true; } */
+  requestUpdateMapPosInfo(): void {
+    this.m_updateMapPosInfo = true
+  }
+
   /** OTC mapview.cpp L518-524: onCameraMove(offset) – requestUpdateMapPosInfo(); if isFollowingCreature() updateViewport(direction). */
   onCameraMove(_offset: { x: number, y: number }) {
-    this.requestUpdateVisibleTiles()
-    // OTC: if (isFollowingCreature()) updateViewport(m_followingCreature->isWalking() ? getDirection() : InvalidDirection); – viewport edge; we only request cache update.
+    this.requestUpdateMapPosInfo()
+    if (this.isFollowingCreature() && this.m_followingCreature) {
+      const direction = this.m_followingCreature.isWalking?.()
+        ? (this.m_followingCreature.getDirection?.() ?? Direction.InvalidDirection)
+        : Direction.InvalidDirection
+      this.updateViewport(direction)
+    }
   }
 
   /** OTC mapview.cpp L544-555: onTileUpdate – if thing&&isOpaque&&op==REMOVE m_resetCoveredCache; if op==CLEAN requestUpdateVisibleTiles. */
   onTileUpdate(pos: Position, thing: any, operation: string) {
     if (thing?.isOpaque?.() && operation === 'remove') this.m_resetCoveredCache = true
     if (operation === 'clean') this.requestUpdateVisibleTiles()
+  }
+
+  /** OTC: updateRect(rect) – atualiza câmera, srcRect, drawOffset e stretch factors para o frame. */
+  updateRect(rect: Rect): void {
+    const camera = this.getCameraPosition()
+    const lastCamera = this.m_posInfo.camera
+    if (!lastCamera || !lastCamera.equals(camera)) {
+      this.m_posInfo.camera = camera
+      this.requestUpdateVisibleTiles()
+      this.requestUpdateMapPosInfo()
+    }
+
+    const rw = Math.max(1, rect.width ?? 1)
+    const rh = Math.max(1, rect.height ?? 1)
+    const rectChanged =
+      (this.m_posInfo.rect.x ?? 0) !== (rect.x ?? 0) ||
+      (this.m_posInfo.rect.y ?? 0) !== (rect.y ?? 0) ||
+      (this.m_posInfo.rect.width ?? 0) !== rw ||
+      (this.m_posInfo.rect.height ?? 0) !== rh
+
+    if (rectChanged || this.m_updateMapPosInfo) {
+      this.m_updateMapPosInfo = false
+      this.m_posInfo.rect = {
+        x: rect.x ?? 0,
+        y: rect.y ?? 0,
+        width: rw,
+        height: rh,
+      }
+      const srcRect = this.calcFramebufferSource({ width: rw, height: rh })
+      this.m_posInfo.srcRect = srcRect
+      this.m_posInfo.drawOffset = { x: srcRect.x ?? 0, y: srcRect.y ?? 0 }
+      const srcW = Math.max(1, srcRect.width ?? 1)
+      const srcH = Math.max(1, srcRect.height ?? 1)
+      this.m_posInfo.horizontalStretchFactor = rw / srcW
+      this.m_posInfo.verticalStretchFactor = rh / srcH
+    }
   }
 
   /**
@@ -364,7 +537,7 @@ export class MapView {
     if (this.m_lockedFirstVisibleFloor !== -1) {
       z = this.m_lockedFirstVisibleFloor
     } else {
-      const cameraPos = Position.from(this.getCameraPosition())
+      const cameraPos = Position.from(this.m_posInfo.camera)
       if (cameraPos.isValid()) {
         let firstFloor = 0
         if (cameraPos.z > g_gameConfig.getMapSeaFloor()) {
@@ -407,7 +580,7 @@ export class MapView {
    */
   calcLastVisibleFloor(): number {
     let z = g_gameConfig.getMapSeaFloor()
-    const cameraPos = Position.from(this.getCameraPosition())
+    const cameraPos = Position.from(this.m_posInfo.camera)
     if (cameraPos.isValid()) {
       if (cameraPos.z > g_gameConfig.getMapSeaFloor()) {
         z = cameraPos.z + g_gameConfig.getMapAwareUndergroundFloorRange()
@@ -426,8 +599,12 @@ export class MapView {
    * Early return if camera invalid; clear cache; calc first/last visible floor; cache visible tiles in diagonal order (tilePos = camera.translated(ix - vc); tilePos.coveredUp(camera.z - iz); g_map.getTile(tilePos)); m_updateVisibleTiles = false.
    */
   updateVisibleTiles(): void {
-    const cameraPos = Position.from(this.getCameraPosition())
+    const cameraPos = this.m_posInfo.camera?.isValid?.()
+      ? Position.from(this.m_posInfo.camera)
+      : Position.from(this.getCameraPosition())
     if (!cameraPos.isValid()) return
+    this.m_posInfo.camera = cameraPos.clone()
+    this.rebuildAwareRangeCache()
 
     // OTC: no GameMap; view uses g_map.getTile(tilePos) only.
 
@@ -504,37 +681,11 @@ export class MapView {
   }
 
   /** OTC mapview.cpp L104-118: preLoad() – updateVisibleTiles se necessário; updateAttachedWidgets. */
-  private m_preLoadLogCount = 0
   preLoad(): void {
-    const needsUpdate = this.m_updateVisibleTiles
-    if (needsUpdate) this.updateVisibleTiles()
-    ;(g_map as any).updateAttachedWidgets?.(this)
+    g_dispatcher.poll()
 
-    // DIAGNOSTIC: log first 5 calls
-    if (this.m_preLoadLogCount < 5) {
-      const cam = this.getCameraPosition()
-      const camValid = cam?.isValid?.() ?? false
-      const mapCenter = g_map.getCentralPosition?.()
-      const tileCount = this.m_cachedVisibleTiles.length
-      const floorRange = `${this.m_floorMin}..${this.m_floorMax}`
-      const firstFloor = this.m_cachedFirstVisibleFloor
-      const lastFloor = this.m_cachedLastVisibleFloor
-      const drawDim = `${this.m_drawDimension.width}x${this.m_drawDimension.height}`
-      const following = this.m_followingCreature
-      const followPos = following?.getPosition?.()
-      console.log(
-        `[preLoad #${this.m_preLoadLogCount}] needsUpdate=${needsUpdate}` +
-        ` cam=(${cam?.x},${cam?.y},${cam?.z}) valid=${camValid}` +
-        ` mapCenter=(${mapCenter?.x},${mapCenter?.y},${mapCenter?.z})` +
-        ` tiles=${tileCount} floors=${floorRange} first/last=${firstFloor}/${lastFloor}` +
-        ` drawDim=${drawDim} following=${!!following} followPos=(${followPos?.x},${followPos?.y},${followPos?.z})`
-      )
-      // Also check if g_map has any tiles at all
-      const centerTile = g_map.getTile?.(cam)
-      const hasCenterTile = centerTile != null
-      console.log(`[preLoad #${this.m_preLoadLogCount}] g_map.getTile(cam)=${hasCenterTile ? 'EXISTS' : 'NULL'} g_map.tileCount=${(g_map as any).m_tiles?.size ?? (g_map as any).m_tileMap?.size ?? '?'}`)
-      this.m_preLoadLogCount++
-    }
+    if (this.m_updateVisibleTiles) this.updateVisibleTiles()
+    ;(g_map as any).updateAttachedWidgets?.(this)
   }
 
   /** OTC: getFadeLevel(z) – 0 = skip floor; < .99 use setOpacity. Port: no fade, return 1. */
@@ -554,7 +705,7 @@ export class MapView {
 
   /** OTC mapview.cpp MapView::drawFloor() – 1:1 with C++. */
   drawFloor(): void {
-    const cameraPosition = this.getCameraPosition()
+    const cameraPosition = this.m_posInfo.camera
     const camPos = Position.from(cameraPosition)
     const flags = DRAW_THINGS_FLAGS
     for (let z = this.m_floorMax; z >= this.m_floorMin; z--) {
@@ -570,13 +721,7 @@ export class MapView {
 
       const tilesOnFloor = this.m_cachedVisibleTiles.filter((e: { z: number }) => e.z === z)
 
-      const v = this.m_visibleDimension
-      const viewPort = {
-        left: Math.floor((v.width - 1) / 2),
-        right: v.width - 1 - Math.floor((v.width - 1) / 2),
-        top: Math.floor((v.height - 1) / 2),
-        bottom: v.height - 1 - Math.floor((v.height - 1) / 2),
-      }
+      const viewPort = this.m_viewport
       for (const entry of tilesOnFloor) {
         const tile = entry.tile
         if (!this.m_drawViewportEdge && !tile.canRender(flags, cameraPosition, viewPort))
@@ -625,14 +770,45 @@ export class MapView {
     for (const entry of this.m_cachedVisibleTiles) {
       const dest = this.transformPositionTo2D(entry.tile.getPosition())
       // FIX: tile.draw(dest, drawFlags, lightView) – arguments were in wrong order.
-      entry.tile.draw(dest, DEFAULT_DRAW_FLAGS, this.m_lightView)
+      entry.tile.draw(dest, DrawFlags.DrawLights, this.m_lightView)
     }
     this.m_lightView.updatePixels()
   }
 
-  /** OTC mapview.cpp L210-238: drawCreatureInformation() – names, health bars, etc. Stub. */
+  /** OTC mapview.cpp L210-238: drawCreatureInformation() – names, health bars, etc. */
   drawCreatureInformation(): void {
-    // TODO: g_drawPool.scale; flags; loop g_map.getCreatures(); creature->drawInformation
+    const cameraPosition = this.m_posInfo.camera
+    if (!cameraPosition?.isValid?.()) return
+
+    let flags = DrawFlags.DrawThings | DrawFlags.DrawCreatureInfo
+    flags |= DrawFlags.DrawNames
+    flags |= DrawFlags.DrawBars
+    flags |= DrawFlags.DrawManaBar
+    flags |= DrawFlags.DrawHarmony
+
+    const transparentCam = cameraPosition.clone()
+    const alwaysTransparent =
+      this.m_floorViewMode === 1 &&
+      transparentCam.coveredUp(cameraPosition.z - this.m_floorMin)
+
+    const mapRect = this.m_posInfo
+    for (const creature of g_map.creatures.values()) {
+      const creaturePos = creature.getPosition?.()
+      if (!creaturePos || !mapRect.isInRange(creaturePos)) continue
+
+      const tile = creature.getTile?.()
+      if (!tile) continue
+
+      let isCovered = tile.isCovered(alwaysTransparent ? this.m_floorMin : this.m_cachedFirstVisibleFloor)
+      if (alwaysTransparent && isCovered) {
+        const range = g_gameConfig.getTileTransparentFloorViewRange()
+        const inRange = creaturePos.isInRange(cameraPosition, range, range, true)
+        isCovered = !inRange
+      }
+
+      creature.setCovered?.(isCovered)
+      creature.drawInformation(mapRect, this.transformPositionTo2D(creaturePos), flags)
+    }
   }
 
   /** OTC mapview.cpp L240-284: drawForeground(rect) – static texts, animated texts, foreground tiles. Stub. */
@@ -768,9 +944,9 @@ export class MapView {
       this._lightOverlayMesh.scale.set((actualFrustumW * margin) / baseW, (actualFrustumH * margin) / baseH, 1)
     }
 
-    // Camera uses Y-down: top=0, bottom=h. Blit quad dest uses positive Y (0..vh).
-    this.m_posInfo.rect = { x: 0, y: 0, width: vw, height: vh }
-    this.m_posInfo.srcRect = this.calcFramebufferSource({ width: vw, height: vh })
+    this.m_posInfo.scaleFactor = this.m_pool.getScaleFactor?.() ?? 1
+    this.requestUpdateMapPosInfo()
+    this.updateRect({ x: 0, y: 0, width: vw, height: vh })
   }
 
   dispose() {

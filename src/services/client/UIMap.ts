@@ -74,19 +74,23 @@ export class UIMap {
 
   /** OTC uimap.cpp L52-73: draw(drawPane) – preDraw for MAP, LIGHT, CREATURE_INFORMATION, FOREGROUND_MAP. */
   draw(drawPane: DrawPoolType): void {
-    // Use current host size for blit dest. Camera is Y-down (top=0, bottom=h), so dest.y = 0.
     const vw = this.m_mapView.host?.clientWidth ?? 0
     const vh = this.m_mapView.host?.clientHeight ?? 0
     if (vw > 0 && vh > 0) {
-      this.m_mapView.m_posInfo.rect = { x: 0, y: 0, width: vw, height: vh }
-      this.m_mapView.m_posInfo.srcRect = this.m_mapView.calcFramebufferSource({ width: vw, height: vh })
+      const rect = { x: 0, y: 0, width: vw, height: vh }
+      if (drawPane === DrawPoolType.MAP) {
+        this.m_mapView.updateRect(rect)
+        this.m_mapView.preLoad()
+        this.m_mapView.updateRect(rect)
+      } else {
+        this.m_mapView.updateRect(rect)
+      }
     }
     const rect = this.m_mapView.m_posInfo.rect
     const srcRect = this.m_mapView.m_posInfo.srcRect
     const black = { r: 0, g: 0, b: 0, a: 255 }
 
     if (drawPane === DrawPoolType.MAP) {
-      this.m_mapView.preLoad()
       g_drawPool.preDraw(
         drawPane,
         () => this.m_mapView.drawFloor(),
@@ -110,9 +114,9 @@ export class UIMap {
     }
   }
 
-  /** OTC: updateMapRect() – m_mapView->updateRect(m_mapviewRect). In this port MapView has no updateRect; no-op or resize. */
+  /** OTC: updateMapRect() – m_mapView->updateRect(m_mapviewRect). */
   updateMapRect(): void {
-    // MapView.resize(host) is called from outside when container size changes
+    this.m_mapView.updateRect(this.m_mapviewRect)
   }
 
   // ----------------- delegates to MapView -----------------

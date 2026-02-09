@@ -9,13 +9,12 @@ import type { IAttachedEffectLike } from './AttachableObject'
 import type { Light } from './StaticData'
 import { Size, Color, Timer } from './types'
 import { Otc } from './Const'
-import { ThingCategory } from './Const'
 import { Bounce } from './StaticData'
 import { g_gameConfig } from './gameConfig'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawOrder, DrawPoolType } from '../graphics/DrawPool'
 import { getThings } from '../protocol/things'
-import type { ThingType } from '../things/thingType'
+import { ThingCategory, type ThingType } from '../things/thingType'
 import type { Position } from './Position'
 
 const NORTHWEST_DIR = Otc.Direction.NorthWest as number
@@ -56,7 +55,7 @@ export class AttachedEffect implements IAttachedEffectLike {
   m_smooth: boolean = true
   m_followOwner: boolean = false
   m_thingId: number = 0
-  m_thingCategory: ThingCategory = ThingCategory.ThingInvalidCategory
+  m_thingCategory: ThingCategory = ThingCategory.Invalid
   m_size: Size = { width: 0, height: 0 }
   m_name: string = ''
   m_texturePath: string = ''

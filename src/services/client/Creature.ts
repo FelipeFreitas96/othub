@@ -10,14 +10,16 @@ import { getThings } from '../protocol/things'
 import { g_map } from './ClientMap'
 import { g_dispatcher, type ScheduledEventHandle } from '../framework/EventDispatcher'
 import { isFeatureEnabled, getClientVersion, FEATURES } from '../protocol/features'
-import { Outfit } from './types'
-import type { MapPosInfo, Point, Rect } from './types'
+import type { Outfit as OutfitData, MapPosInfo, Point, Rect } from './types'
+import { Outfit as OutfitPalette } from './Outfit'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { Thing, type DrawDest } from './Thing'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawOrder } from '../graphics/DrawPool'
+import { CompositionMode } from '../graphics/declarations'
 import { ThingType } from '../things/thingType'
 import { g_game } from './Game'
+import { g_gameConfig } from './gameConfig'
 import { DrawFlags } from '../graphics/drawFlags'
 
 const TILE_PIXELS = 32
@@ -49,7 +51,7 @@ export interface CreatureData {
   name?: string
   health?: number
   direction?: number
-  outfit?: Outfit
+  outfit?: OutfitData
   speed?: number
   baseSpeed?: number
   light?: { intensity: number, color: number }
@@ -77,7 +79,8 @@ export class Creature extends Thing {
   m_name: string
   m_healthPercent: number
   m_direction: number
-  m_outfit: Outfit
+  m_numPatternX: number
+  m_outfit: OutfitData
   m_speed: number
   m_baseSpeed: number
   m_walking: boolean
@@ -99,6 +102,7 @@ export class Creature extends Thing {
   m_footStep: number
   m_footStepDrawn: boolean
   m_walkFinishAnimEvent: ScheduledEventHandle | null
+  m_disappearEvent: ScheduledEventHandle | null
   m_stepCache: {
     speed: number,
     groundSpeed: number,
@@ -167,6 +171,7 @@ export class Creature extends Thing {
     this.m_name = data.name ?? ''
     this.m_healthPercent = typeof data.health === 'number' ? data.health : 101
     this.m_direction = data.direction ?? 2 // South
+    this.m_numPatternX = this.toDirectionPatternX(this.m_direction)
     this.m_outfit = data.outfit ?? { lookType: 0 }
     this.m_speed = data.speed ?? 0
     this.m_baseSpeed = data.baseSpeed ?? 0
@@ -190,6 +195,7 @@ export class Creature extends Thing {
     this.m_footStep = 0
     this.m_footStepDrawn = false
     this.m_walkFinishAnimEvent = null
+    this.m_disappearEvent = null
     this.m_stepCache = {
       speed: 0,
       groundSpeed: 0,
@@ -213,7 +219,7 @@ export class Creature extends Thing {
     this.m_removed = true
     this.m_oldPosition = null
     this.m_passable = false
-    this.m_position = null
+    this.m_position = new Position()
     this.m_walkUpdateEvent = null
     this.m_masterId = 0
     this.m_skull = 0
@@ -388,9 +394,11 @@ export class Creature extends Thing {
     return (this.m_outfit as any)?.isEffect === true
   }
 
-  /** OTC: getDisplacement() – from ThingType. */
+  /** OTC: getDisplacement() */
   getDisplacement(): { x: number; y: number } {
-    const ct = this.getThingType(undefined)
+    if (this.isOutfitEffect()) return { x: 8, y: 8 }
+    if (this.isOutfitItem()) return { x: 0, y: 0 }
+    const ct = this.getThingType()
     const d = ct?.getDisplacement?.() ?? ct?.m_displacement ?? { x: 0, y: 0 }
     return { x: d.x ?? 0, y: d.y ?? 0 }
   }
@@ -404,41 +412,73 @@ export class Creature extends Thing {
   }
 
   /** OTC: m_outfit.getHeadColor() – Color from outfit head (8bit → rgb stub). */
+  private resolveOutfitColor(index: number | undefined): { r: number; g: number; b: number } {
+    const n = Number(index ?? 0)
+    if (!Number.isFinite(n)) return { r: 255, g: 255, b: 255 }
+    if (n > 0xff) {
+      const rgb = n >>> 0
+      if (rgb === 0) return { r: 255, g: 255, b: 255 }
+      return { r: (rgb >> 16) & 0xff, g: (rgb >> 8) & 0xff, b: rgb & 0xff }
+    }
+    const rgb = OutfitPalette.getColor(n & 0xff) >>> 0
+    if (rgb === 0) return { r: 255, g: 255, b: 255 }
+    return { r: (rgb >> 16) & 0xff, g: (rgb >> 8) & 0xff, b: rgb & 0xff }
+  }
+
   getOutfitHeadColor(): { r: number; g: number; b: number } {
-    const v = this.m_outfit?.head ?? 255
-    return { r: v, g: v, b: v }
+    return this.resolveOutfitColor(this.m_outfit?.head)
   }
   getOutfitBodyColor(): { r: number; g: number; b: number } {
-    const v = this.m_outfit?.body ?? 255
-    return { r: v, g: v, b: v }
+    return this.resolveOutfitColor(this.m_outfit?.body)
   }
   getOutfitLegsColor(): { r: number; g: number; b: number } {
-    const v = this.m_outfit?.legs ?? 255
-    return { r: v, g: v, b: v }
+    return this.resolveOutfitColor(this.m_outfit?.legs)
   }
   getOutfitFeetColor(): { r: number; g: number; b: number } {
-    const v = this.m_outfit?.feet ?? 255
-    return { r: v, g: v, b: v }
+    return this.resolveOutfitColor(this.m_outfit?.feet)
   }
 
   setMasterId(masterId: number) { this.m_masterId = masterId }
   getMasterId() { return this.m_masterId }
 
-  static hasSpeedFormula() { return Creature.speedA !== 0 && Creature.speedB !== 0 && Creature.speedC !== 0; }
+  static hasSpeedFormula() {
+    return isFeatureEnabled(FEATURES.GameNewSpeedLaw) && Creature.speedA !== 0 && Creature.speedB !== 0 && Creature.speedC !== 0
+  }
 
   // Override Thing.getId() to return the creature's unique ID
   override getId(): number | string { return this.m_id }
   override setId(id: number | string) { this.m_id = id }
 
+  private invalidateStepCache() {
+    this.m_stepCache.speed = -1
+    this.m_stepCache.groundSpeed = -1
+    this.m_stepCache.duration = 0
+    this.m_stepCache.walkDuration = 0
+    this.m_stepCache.diagonalDuration = 0
+  }
+
   setDirection(direction: number) {
-    if (direction === -1) return;
+    if (direction === DirInvalid) return;
     this.m_direction = direction;
+    this.m_numPatternX = this.toDirectionPatternX(direction)
   }
   getDirection() { return this.m_direction; }
 
+  private toDirectionPatternX(direction: number): number {
+    if (direction === DirNorthEast || direction === DirSouthEast) return DirEast
+    if (direction === DirNorthWest || direction === DirSouthWest) return DirWest
+    return direction
+  }
+
   setSpeed(speed: number) {
-    if (speed === this.m_speed) return;
+    if (speed === this.m_speed) {
+      // g_player is a singleton in this project; across relogins we may receive the same speed.
+      // Force cache refresh to avoid reusing stale step timing from a previous session.
+      this.invalidateStepCache()
+      return
+    }
     this.m_speed = speed;
+    this.invalidateStepCache()
     if (this.m_walking) this.nextWalkUpdate();
   }
   getSpeed() { return this.m_speed; }
@@ -465,11 +505,10 @@ export class Creature extends Thing {
   }
   getHealthPercent() { return this.m_healthPercent; }
 
-  setOutfit(outfit: Outfit) { this.m_outfit = outfit; }
+  setOutfit(outfit: OutfitData) { this.m_outfit = outfit; }
   getOutfit() { return this.m_outfit; }
 
   override getPosition() { return this.m_position }
-  override setPosition(pos: Position) { this.m_position = pos }
 
   setCameraFollowing(v: boolean) { this.m_cameraFollowing = v; }
   isCameraFollowing() { return this.m_cameraFollowing; }
@@ -587,9 +626,22 @@ export class Creature extends Thing {
       self.nextWalkUpdate();
     };
 
-    // OTC creature.cpp L776: g_dispatcher.scheduleEvent([this]{ nextWalkUpdate(); }, getStepDuration(true) / Otc::TILE_PIXELS)
-    const interval = Math.max(1, Math.floor(this.getStepDuration(true) / TILE_PIXELS));
-    this.m_walkUpdateEvent = g_dispatcher.scheduleEvent(action, interval);
+    // OTC: when camera is following, update every frame (addEvent); otherwise schedule by walkDuration.
+    if (this.isCameraFollowing()) {
+      let canceled = false
+      this.m_walkUpdateEvent = {
+        cancel: () => {
+          canceled = true
+        },
+      }
+      g_dispatcher.addEvent(() => {
+        if (canceled) return
+        action()
+      })
+    } else {
+      const delay = Math.max(1, this.m_stepCache.walkDuration || 1)
+      this.m_walkUpdateEvent = g_dispatcher.scheduleEvent(action, delay)
+    }
   }
 
   // OTC: void Creature::updateWalk() – creature.cpp L779-801
@@ -600,12 +652,18 @@ export class Creature extends Thing {
       : 0;
 
     this.m_walkedPixels = Math.max(this.m_walkedPixels, totalPixelsWalked);
+    const oldWalkOffset = { ...this.m_walkOffset }
 
     this.updateWalkAnimation();
     this.updateWalkOffset(this.m_walkedPixels);
     this.updateWalkingTile();
 
-    if (this.m_walking && this.m_walkTimer.ticksElapsed() >= this.getStepDuration()) {
+    if (this.isCameraFollowing() &&
+        (oldWalkOffset.x !== this.m_walkOffset.x || oldWalkOffset.y !== this.m_walkOffset.y)) {
+      g_map.notificateCameraMove(this.m_walkOffset)
+    }
+
+    if (this.m_walkedPixels === TILE_PIXELS) {
       this.terminateWalk();
     }
   }
@@ -630,7 +688,6 @@ export class Creature extends Thing {
     this.m_walking = false;
     this.m_walkedPixels = 0;
     this.m_walkOffset = { x: 0, y: 0 };
-    this.m_walkAnimationPhase = 0;
 
     this.m_walkFinishAnimEvent = g_dispatcher.scheduleEvent(() => {
       this.m_walkAnimationPhase = 0;
@@ -658,23 +715,27 @@ export class Creature extends Thing {
   // OTC: void Creature::updateWalkingTile() – creature.cpp L720-757
   // virtualCreatureRect = Rect(TILE_PIXELS + (m_walkOffset.x - getDisplacementX()), ...); find tile containing bottomRight()
   updateWalkingTile() {
-    if (!this.m_position) return;
+    const currentPos = this.getPosition()
+    if (!currentPos?.isValid?.()) return
 
     const T = TILE_PIXELS;
-    const left = T + (this.m_walkOffset.x - this.getDisplacementX());
-    const top = T + (this.m_walkOffset.y - this.getDisplacementY());
-    const creatureRight = left + T;
-    const creatureBottom = top + T;
+    const displacementX = isFeatureEnabled(FEATURES.GameNegativeOffset) ? 0 : this.getDisplacementX()
+    const displacementY = isFeatureEnabled(FEATURES.GameNegativeOffset) ? 0 : this.getDisplacementY()
+    const left = T + (this.m_walkOffset.x - displacementX);
+    const top = T + (this.m_walkOffset.y - displacementY);
+    // OTC Rect is inclusive on right/bottom: x2 = x + width - 1.
+    const creatureRight = left + T - 1;
+    const creatureBottom = top + T - 1;
 
     let newWalkingTile: Tile | null = null;
     for (let xi = -1; xi <= 1 && !newWalkingTile; xi++) {
       for (let yi = -1; yi <= 1 && !newWalkingTile; yi++) {
         const tileLeft = (xi + 1) * T;
         const tileTop = (yi + 1) * T;
-        const tileRight = tileLeft + T;
-        const tileBottom = tileTop + T;
+        const tileRight = tileLeft + T - 1;
+        const tileBottom = tileTop + T - 1;
         if (creatureRight >= tileLeft && creatureRight <= tileRight && creatureBottom >= tileTop && creatureBottom <= tileBottom) {
-          const pos = new Position(this.m_position.x + xi, this.m_position.y + yi, this.m_position.z);
+          const pos = new Position(currentPos.x + xi, currentPos.y + yi, currentPos.z);
           newWalkingTile = g_map.getOrCreateTile(pos);
         }
       }
@@ -754,16 +815,20 @@ export class Creature extends Thing {
   getStepDuration(ignoreDiagonal = false, dir: number = DirInvalid) {
     if (this.m_speed < 1) return 0;
 
-    const serverBeat = 50;
+    const serverBeat = Math.max(1, g_game.getServerBeat?.() ?? 50)
     let groundSpeed = 150;
-    let tilePos: Position | null = dir === DirInvalid && this.m_lastStepToPosition
-      ? this.m_lastStepToPosition
-      : this.m_position
-        ? Creature.positionTranslatedToDirection(this.m_position, dir)
-        : null;
-    if (!tilePos || !g_map.getTile(tilePos)) tilePos = this.m_position ?? this.m_lastStepToPosition ?? null;
-    const tile = tilePos ? g_map.getTile(tilePos) : null;
+    const currentPos = this.getPosition?.() ?? this.m_position
+    const tilePos =
+      dir === DirInvalid
+        ? (this.m_lastStepToPosition ?? null)
+        : (currentPos ? Creature.positionTranslatedToDirection(currentPos, dir) : null)
+    const tileLookupPos =
+      tilePos?.isValid?.()
+        ? tilePos
+        : (currentPos ?? null)
+    const tile = tileLookupPos ? g_map.getTile(tileLookupPos) : null
     if (tile) groundSpeed = tile.getGroundSpeed();
+    if (groundSpeed === 0) groundSpeed = 150
 
     if (groundSpeed !== this.m_stepCache.groundSpeed || this.m_speed !== this.m_stepCache.speed) {
       this.m_stepCache.speed = this.m_speed;
@@ -781,18 +846,30 @@ export class Creature extends Thing {
         stepDuration /= this.m_speed;
       }
 
-      // OTC: stepDuration = ((stepDuration + serverBeat - 1) / serverBeat) * serverBeat;
-      stepDuration = Math.floor((stepDuration + serverBeat - 1) / serverBeat) * serverBeat;
+      if (g_gameConfig.isForcingNewWalkingFormula?.() || g_game.getClientVersion() >= 860) {
+        stepDuration = Math.floor((stepDuration + serverBeat - 1) / serverBeat) * serverBeat
+      }
 
       this.m_stepCache.duration = stepDuration;
-      this.m_stepCache.walkDuration = Math.min(Math.floor(stepDuration / 32), 16); // 32 = spriteSize, 16 = FPS60
+      this.m_stepCache.walkDuration = Math.min(
+        Math.floor(stepDuration / g_gameConfig.getSpriteSize()),
+        16
+      )
 
-      // Diagonal walk speed factor
-      const diagonalFactor = 3; // Default for newer clients
-      this.m_stepCache.diagonalDuration = stepDuration * diagonalFactor;
+      const diagonalFactor =
+        (g_game.getClientVersion() > 810 || g_gameConfig.isForcingNewWalkingFormula?.())
+          ? (this.isPlayer()
+            ? (g_gameConfig.getPlayerDiagonalWalkSpeed?.() ?? 3)
+            : (g_gameConfig.getCreatureDiagonalWalkSpeed?.() ?? 3))
+          : 2
+      this.m_stepCache.diagonalDuration = stepDuration * diagonalFactor
     }
 
     let duration = ignoreDiagonal ? this.m_stepCache.duration : this.m_stepCache.getDuration(this.m_lastStepDirection);
+    if (this.isCameraFollowing() && this.isLocalPlayer()) {
+      const preWalkSize = (this as any).getPreWalkingSize?.() ?? 0
+      duration += 10 * Math.max(1, preWalkSize)
+    }
     return duration;
   }
 
@@ -830,7 +907,41 @@ export class Creature extends Thing {
 
   onWalking() { }
 
+  override onDisappear() {
+    if (this.m_disappearEvent) {
+      this.m_disappearEvent.cancel()
+      this.m_disappearEvent = null
+    }
+
+    if (this.m_position && this.m_position.isValid()) {
+      this.m_oldPosition = this.m_position.clone()
+    }
+
+    // OTC behavior: onDisappear/onAppear pairs happen even for walk/turn.
+    // Defer "removed" state so immediate re-appear can cancel it.
+    this.m_disappearEvent = g_dispatcher.scheduleEvent(() => {
+      this.m_removed = true
+      this.stopWalk()
+
+      if (!this.isLocalPlayer()) {
+        this.setPosition(new Position())
+      }
+
+      this.m_oldPosition = null
+      this.m_disappearEvent = null
+    }, 0)
+  }
+
   override onAppear() {
+    if (this.m_disappearEvent) {
+      this.m_disappearEvent.cancel()
+      this.m_disappearEvent = null
+    }
+
+    if (this.isCameraFollowing() && this.m_oldPosition && !this.m_oldPosition.equals(this.m_position)) {
+      g_map.notificateCameraMove(this.m_walkOffset)
+    }
+
     if (this.m_removed) {
       this.stopWalk();
       this.m_removed = false;
@@ -857,37 +968,52 @@ export class Creature extends Thing {
     return this.m_walkOffset
   }
 
+  /** OTC: Creature::getDrawElevation() */
+  getDrawElevation(): number {
+    if (this.m_walkingTile) {
+      return this.m_walkingTile.getDrawElevation()
+    }
+
+    const tile = this.getTile()
+    if (tile) return tile.getDrawElevation()
+    return 0
+  }
+
   // OTC: Point Creature::getDrawOffset() – creature.cpp L519-529
   getDrawOffset(): { x: number, y: number } {
     let drawOffsetX = 0;
     let drawOffsetY = 0;
     if (this.m_walking) {
-      if (this.m_walkingTile) {
-        const elev = this.m_walkingTile.getDrawElevation();
-        drawOffsetX -= elev;
-        drawOffsetY -= elev;
-      }
+      drawOffsetX -= this.getDrawElevation();
+      drawOffsetY -= this.getDrawElevation();
       drawOffsetX += this.m_walkOffset.x;
       drawOffsetY += this.m_walkOffset.y;
     } else {
-      const tile = this.getTile();
-      if (tile) {
-        const elev = tile.getDrawElevation();
-        drawOffsetX -= elev;
-        drawOffsetY -= elev;
-      }
+      const elev = this.getDrawElevation();
+      drawOffsetX -= elev;
+      drawOffsetY -= elev;
     }
     return { x: drawOffsetX, y: drawOffsetY };
   }
 
   getDisplacementX(): number {
-    if (this.m_outfit?.lookTypeEx) return 8;
+    if (this.isOutfitEffect()) return 8;
+    if (this.isOutfitItem()) return 0;
+    if (this.hasMount()) {
+      const mt = this.getMountThingType()
+      return mt?.getDisplacementX?.() ?? 0
+    }
     const tt = this.getThingType() ?? getThings()?.types?.getCreature?.(this.m_outfit?.lookType ?? 0) ?? null;
     return tt?.getDisplacementX?.() ?? 0;
   }
 
   getDisplacementY(): number {
-    if (this.m_outfit?.lookTypeEx) return 8;
+    if (this.isOutfitEffect()) return 8;
+    if (this.isOutfitItem()) return 0;
+    if (this.hasMount()) {
+      const mt = this.getMountThingType()
+      return mt?.getDisplacementY?.() ?? 0
+    }
     const tt = this.getThingType() ?? getThings()?.types?.getCreature?.(this.m_outfit?.lookType ?? 0) ?? null;
     return tt?.getDisplacementY?.() ?? 0;
   }
@@ -910,13 +1036,13 @@ export class Creature extends Thing {
 
   /** OTC: Thing::getNumPatternY() – from ThingType (addons). */
   getNumPatternY(): number {
-    const ct = this.getThingType(undefined)
+    const ct = this.getThingType()
     return ct?.getNumPatternY?.() ?? 1
   }
 
   /** OTC: number of layers for outfit color drawing (head/body/legs/feet). */
   getLayers(): number {
-    const ct = this.getThingType(undefined)
+    const ct = this.getThingType()
     return (ct as any)?.m_layers ?? ct?.getLayers?.() ?? 1
   }
 
@@ -943,25 +1069,44 @@ export class Creature extends Thing {
    */
   override draw(dest: DrawDest, drawThings: boolean, lightView?: import('./LightView').LightView | null) {
     if (!g_drawPool.isValid()) return
+    if (!this.canBeSeen() || this.isDead()) return
     const ct = this.getThingType()
     if (!ct) return
     if (this.m_walking && !(dest.isWalkDraw ?? false)) return
 
-    const TILE_PIXELS = 32
+    const walkOffset = this.m_walkOffset ?? { x: 0, y: 0 }
     const internalDest = {
       tileX: (dest.x ?? 0) / TILE_PIXELS,
       tileY: (dest.y ?? 0) / TILE_PIXELS,
       drawElevationPx: dest.drawElevationPx ?? 0,
       zOff: 0,
       tileZ: dest.tileZ ?? 0,
-      pixelOffsetX: dest.pixelOffsetX ?? 0,
-      pixelOffsetY: dest.pixelOffsetY ?? 0,
+      pixelOffsetX: (dest.pixelOffsetX ?? 0) + walkOffset.x,
+      pixelOffsetY: (dest.pixelOffsetY ?? 0) + walkOffset.y,
       frameGroupIndex: ct.getFrameGroupForDraw(this.m_walking),
     }
 
-    const color = Creature.COLOR_WHITE
-    this.internalDraw(internalDest, color)
-    this.m_footStepDrawn = true
+    if (drawThings) {
+      const color = Creature.COLOR_WHITE
+      this.internalDraw(internalDest, color)
+      this.m_footStepDrawn = true
+    }
+  }
+
+  drawLight(dest: DrawDest, lightView?: import('./LightView').LightView | null): void {
+    if (!lightView) return
+
+    const base = { x: dest.x ?? 0, y: dest.y ?? 0 }
+    const walkOffset = this.m_walkOffset ?? { x: 0, y: 0 }
+    const light = this.getLight()
+    if (light.intensity > 0) {
+      lightView.addLightSource(
+        base.x + walkOffset.x + TILE_PIXELS / 2,
+        base.y + walkOffset.y + TILE_PIXELS / 2,
+        light,
+        1
+      )
+    }
   }
 
   /**
@@ -996,9 +1141,7 @@ export class Creature extends Thing {
       const animationPhase = this.getCurrentAnimationPhase(false)
       const ct = this.getThingType()
       if (!ct) return
-      const dir = this.m_walking ? this.m_direction : (this.m_direction ?? 0)
-      const px = ct.patternX ?? ct.m_numPatternX ?? 1
-      const xPattern = px >= 4 ? (dir & 3) : 0
+      const xPattern = this.m_numPatternX
       const zPattern = this.hasMount() ? Math.min(1, ((ct as any).m_numPatternZ ?? 1) - 1) : 0
       const numY = this.getNumPatternY()
 
@@ -1029,7 +1172,7 @@ export class Creature extends Thing {
             }
             ct.draw(destPt, 0, xPattern, yPattern, zPattern, animationPhase, color, true, null)
             if (this.m_drawOutfitColor && !replaceColorShader && this.getLayers() > 1) {
-              g_drawPool.setCompositionMode(1)
+              g_drawPool.setCompositionMode(CompositionMode.MULTIPLY)
               ct.draw(destPt, SpriteMaskYellow, xPattern, yPattern, zPattern, animationPhase, this.getOutfitHeadColor(), true, null)
               ct.draw(destPt, SpriteMaskRed, xPattern, yPattern, zPattern, animationPhase, this.getOutfitBodyColor(), true, null)
               ct.draw(destPt, SpriteMaskGreen, xPattern, yPattern, zPattern, animationPhase, this.getOutfitLegsColor(), true, null)

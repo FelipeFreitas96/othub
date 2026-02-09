@@ -160,13 +160,13 @@ export class LocalPlayer extends Player {
       if (this.isAutoWalking()) return true
       if (this.isPreWalking()) return false
     }
-    return this.m_walkTimer.ticksElapsed() >= this.getStepDuration(true)
+    return this.m_walkTimer.ticksElapsed() >= this.getStepDuration()
   }
 
   getWalkMaxSteps() { return 0 }
 
   getServerPosition() {
-    return g_map?.center ? { ...g_map.center } : { x: 0, y: 0, z: 0 }
+    return this.m_position ? this.m_position.clone() : new Position(0, 0, 0)
   }
 
   /** OTC: void LocalPlayer::preWalk(Otc::Direction direction) */
@@ -210,7 +210,10 @@ export class LocalPlayer extends Player {
     super.terminateWalk()
     this.m_serverWalk = false
     this.m_idleTimer = clockMillis()
-    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('onWalkFinish'))
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('onWalkFinish'))
+      window.dispatchEvent(new CustomEvent('ot:walkFinish'))
+    }
   }
 
   onPositionChange(newPos: Position, oldPos: Position) {
@@ -256,21 +259,24 @@ export class LocalPlayer extends Player {
 
   /** OTC: void LocalPlayer::cancelWalk(Otc::Direction direction) */
   cancelWalk(direction = DirInvalid) {
-    if (this.m_walking && this.isPreWalking()) {
-      const source = this.m_lastStepFromPosition
-      this.stopWalk()
-      if (source) {
-        g_map.removeThing(this)
-        g_map.addThing(this, source, -1)
-      }
+    // OTC: only cancel client-side prewalk movement; do not teleport/remove-add creature here.
+    if (this.m_walking && this.isPreWalking()) this.stopWalk()
+
+    g_map.notificateCameraMove(this.m_walkOffset)
+
+    if (this.m_adjustInvalidPosEvent) {
+      this.cancelAdjustInvalidPosEvent()
+      this.m_preWalks = []
     }
-    this.m_preWalks = []
-    this.cancelAdjustInvalidPosEvent()
+
     this.m_idleTimer = clockMillis()
     this.lockWalk()
     if (this.retryAutoWalk()) return
     if (direction !== DirInvalid) this.setDirection(direction)
-    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('onCancelWalk', { detail: direction }))
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('onCancelWalk', { detail: direction }))
+      window.dispatchEvent(new CustomEvent('ot:cancelWalk', { detail: direction }))
+    }
   }
 
   stopAutoWalk() {
@@ -295,11 +301,6 @@ export class LocalPlayer extends Player {
     this.m_autoWalkDestination = destination instanceof Position ? destination.clone() : Position.from(destination)
     this.lockWalk()
     return true
-  }
-
-  override stopWalk() {
-    super.stopWalk()
-    this.m_preWalks = []
   }
 
   isCreatureWalking() {
@@ -415,6 +416,16 @@ export class LocalPlayer extends Player {
   isServerWalking() { return this.m_serverWalk }
   isPremium() { return this.m_premium }
   isPendingGame() { return this.m_pending }
+
+  /**
+   * Session reset (OTC-style behavior where a new LocalPlayer is created on login).
+   * We keep the singleton reference and copy fields from a fresh instance.
+   */
+  resetForLogin(characterName = ''): void {
+    const fresh = new LocalPlayer()
+    Object.assign(this, fresh)
+    if (characterName) this.setName(characterName)
+  }
 }
 
 export const g_player = new LocalPlayer()
