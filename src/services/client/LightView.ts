@@ -7,6 +7,8 @@
  */
 
 import type { Light } from './types'
+import { g_drawPool } from '../graphics/DrawPoolManager'
+import { CompositionMode } from '../graphics/declarations'
 
 const TILE_PIXELS = 32
 
@@ -33,6 +35,7 @@ export class LightView {
   private tileSize = TILE_PIXELS
   private globalColor: { r: number, g: number, b: number } = { r: 255, g: 255, b: 255 }
   private isDark = false
+  private enabled = true
   private lights: TileLight[] = []
   private tileShade: number[] = []
   private canvas: HTMLCanvasElement | null = null
@@ -139,7 +142,39 @@ export class LightView {
     return this.canvas
   }
 
+  setEnabled(enable: boolean) {
+    this.enabled = !!enable
+  }
+
+  draw(destRect: { x: number, y: number, width: number, height: number }, srcRect?: { x?: number, y?: number, width?: number, height?: number }) {
+    if (!this.isEnabled()) return
+    const canvas = this.getCanvas()
+    if (!canvas) return
+
+    const texture = g_drawPool.texForCanvas(canvas) as { needsUpdate?: boolean } | null
+    if (!texture) return
+    texture.needsUpdate = true
+
+    g_drawPool.setCompositionMode(CompositionMode.LIGHT, true)
+    g_drawPool.addTexturedRect(
+      {
+        x: destRect.x ?? 0,
+        y: destRect.y ?? 0,
+        width: Math.max(1, destRect.width ?? 1),
+        height: Math.max(1, destRect.height ?? 1),
+      },
+      texture,
+      {
+        x: srcRect?.x ?? 0,
+        y: srcRect?.y ?? 0,
+        width: Math.max(1, srcRect?.width ?? canvas.width),
+        height: Math.max(1, srcRect?.height ?? canvas.height),
+      },
+      { r: 255, g: 255, b: 255, a: 255 }
+    )
+  }
+
   isEnabled(): boolean {
-    return this.isDark
+    return this.enabled && this.isDark
   }
 }

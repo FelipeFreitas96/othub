@@ -15,7 +15,7 @@ const MIN_STATIC_TEXT_DURATION = 3000
 const MAX_MESSAGES = 10
 const WRAP_WIDTH = 275
 const LINE_HEIGHT = 12
-const FONT = '14px sans-serif'
+const FONT = 'bold 14px sans-serif'
 
 const MESSAGE_COLOR1 = { r: 239, g: 239, b: 0, a: 255 }
 const MESSAGE_COLOR2 = { r: 254, g: 101, b: 0, a: 255 }

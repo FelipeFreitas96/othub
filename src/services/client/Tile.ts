@@ -16,6 +16,7 @@ import { Thing } from './types'
 import type { Point } from './types'
 import { Position, PositionLike, ensurePosition } from './Position'
 import { ThingTypeManager } from '../things/thingTypeManager'
+import { ThingAttr } from '../things/thingType'
 import type { LightView } from './LightView'
 import type { AwareRange } from './StaticData'
 import { getThings } from '../protocol/things'
@@ -415,6 +416,150 @@ export class Tile {
     return null
   }
 
+  private hasThingAttr(thing: Thing | null | undefined, attr: number): boolean {
+    if (!thing || thing.isCreature?.()) return false
+    const tt = thing.getThingType?.() as any
+    if (!tt) return false
+    if (typeof tt.hasAttr === 'function') return tt.hasAttr(attr)
+    if (tt.m_attribs?.has) return tt.m_attribs.has(attr)
+    return false
+  }
+
+  private isIgnoreLookThing(thing: Thing | null | undefined): boolean {
+    if (!thing) return false
+    const tt = thing.getThingType?.() as any
+    return !!(tt?.isIgnoreLook?.() || this.hasThingAttr(thing, ThingAttr.Look))
+  }
+
+  private isForceUseThing(thing: Thing | null | undefined): boolean {
+    return this.hasThingAttr(thing, ThingAttr.ForceUse)
+  }
+
+  private isNotMoveableThing(thing: Thing | null | undefined): boolean {
+    return this.hasThingAttr(thing, ThingAttr.NotMoveable)
+  }
+
+  getTopLookThing(): Thing | null {
+    if (this.isEmpty()) return null
+
+    for (const thing of this.m_things) {
+      const normalItem =
+        !thing?.isGround?.() &&
+        !thing?.isGroundBorder?.() &&
+        !thing?.isOnBottom?.() &&
+        !thing?.isOnTop?.()
+      if (!this.isIgnoreLookThing(thing) && normalItem) return thing
+    }
+
+    return this.m_things[0] ?? null
+  }
+
+  getTopUseThing(): Thing | null {
+    if (this.isEmpty()) return null
+
+    for (const thing of this.m_things) {
+      const normalItem =
+        !thing?.isGround?.() &&
+        !thing?.isGroundBorder?.() &&
+        !thing?.isOnBottom?.() &&
+        !thing?.isOnTop?.() &&
+        !thing?.isCreature?.() &&
+        !this.hasThingAttr(thing, ThingAttr.Splash)
+      if (this.isForceUseThing(thing) || normalItem) return thing
+    }
+
+    for (let i = this.m_things.length - 1; i > 0; i--) {
+      const thing = this.m_things[i]
+      if (!this.hasThingAttr(thing, ThingAttr.Splash) && !thing?.isCreature?.()) return thing
+    }
+
+    return this.m_things[0] ?? null
+  }
+
+  getTopCreature(checkAround = false): Creature | null {
+    if (!this.hasCreatures() && this.m_walkingCreatures.length === 0 && !checkAround) return null
+
+    let localPlayer: Creature | null = null
+    for (const thing of this.m_things) {
+      if (!thing?.isCreature?.()) continue
+      const creature = thing as Creature
+      if (thing?.isLocalPlayer?.()) localPlayer = creature
+      else return creature
+    }
+
+    if (localPlayer) return localPlayer
+    if (this.m_walkingCreatures.length > 0) return this.m_walkingCreatures[this.m_walkingCreatures.length - 1]
+
+    if (checkAround) {
+      for (const pos of this.m_position.getPositionsAround()) {
+        const tile = g_map.getTile(pos)
+        if (!tile?.m_walkingCreatures?.length) continue
+        for (const creature of tile.m_walkingCreatures) {
+          const fromPos = creature.getLastStepFromPosition?.()
+          const duration = creature.getStepDuration?.()
+          const elapsed = creature.getWalkTicksElapsed?.()
+          const progress = duration && duration > 0 && elapsed != null ? elapsed / duration : 1
+          const leftFromThisTile =
+            fromPos &&
+            fromPos.x === this.m_position.x &&
+            fromPos.y === this.m_position.y &&
+            fromPos.z === this.m_position.z
+          if (creature.isWalking?.() && leftFromThisTile && progress < 0.75) {
+            return creature
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
+  getTopMoveThing(): Thing | null {
+    if (this.isEmpty()) return null
+
+    for (let i = 0; i < this.m_things.length; i++) {
+      const thing = this.m_things[i]
+      if (!this._isCommon(thing)) continue
+      if (i > 0 && this.isNotMoveableThing(thing)) return this.m_things[i - 1]
+      return thing
+    }
+
+    for (const thing of this.m_things) {
+      if (thing?.isCreature?.()) return thing
+    }
+
+    return this.m_things[0] ?? null
+  }
+
+  getTopMultiUseThing(): Thing | null {
+    if (this.isEmpty()) return null
+
+    const topCreature = this.getTopCreature()
+    if (topCreature) return topCreature
+
+    for (const thing of this.m_things) {
+      if (this.isForceUseThing(thing)) return thing
+    }
+
+    for (let i = 0; i < this.m_things.length; i++) {
+      const thing = this.m_things[i]
+      const normalItem =
+        !thing?.isGround?.() &&
+        !thing?.isGroundBorder?.() &&
+        !thing?.isOnBottom?.() &&
+        !thing?.isOnTop?.()
+      if (!normalItem) continue
+      if (i > 0 && this.hasThingAttr(thing, ThingAttr.Splash)) return this.m_things[i - 1]
+      return thing
+    }
+
+    for (const thing of this.m_things) {
+      if (!thing?.isGround?.() && !thing?.isGroundBorder?.() && !thing?.isOnTop?.()) return thing
+    }
+
+    return this.m_things[0] ?? null
+  }
+
   /** OTC: isCommon() – !ground && !groundBorder && !onTop && !creature && !onBottom. */
   _isCommon(thing: Thing): boolean {
     return !thing?.isGround?.() && !thing?.isGroundBorder?.() && !thing?.isOnBottom?.() && !thing?.isOnTop?.() && !thing?.isCreature?.()
@@ -532,6 +677,24 @@ export class Tile {
   }
 
   /** OTC Tile::canShade() – tile contributes to light shades. Stub: false. */
+  /** OTC: Tile::isClickable() */
+  isClickable(): boolean {
+    let hasGround = false
+    let hasOnBottom = false
+    let hasIgnoreLook = false
+
+    for (const thing of this.m_things) {
+      if (thing?.isGround?.()) hasGround = true
+      else if (thing?.isOnBottom?.()) hasOnBottom = true
+
+      if (this.isIgnoreLookThing(thing)) hasIgnoreLook = true
+      if ((hasGround || hasOnBottom) && !hasIgnoreLook) return true
+    }
+
+    return false
+  }
+
+  /** OTC Tile::canShade() â€“ tile contributes to light shades. Stub: false. */
   canShade(): boolean {
     return false
   }

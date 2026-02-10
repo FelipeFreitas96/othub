@@ -1,18 +1,12 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
-
-/**
- * MiniWindow - UIMiniWindow do OTClient: janela livre na tela (position: fixed).
- * Dimensões padrão como no OTClient (width: 192, height: 200 no .otui).
- */
-const IMG = {
-  miniborder: '/images/ui/miniborder.png',
-}
+import UIWindow from './UIWindow'
 
 const MINI_WINDOW_WIDTH = 192
 const MINI_WINDOW_MIN_HEIGHT = 200
 const MINI_WINDOW_MAX_HEIGHT = 500
 const MINI_WINDOW_HEADER_HEIGHT = 28
 const RESIZE_HANDLE_HEIGHT = 6
+const MINIWINDOW_BUTTONS_IMG = '/images/ui/miniwindow_buttons'
 
 export default function MiniWindow({
   id,
@@ -31,31 +25,33 @@ export default function MiniWindow({
   onDragEnd,
   onPositionChange,
   onSizeReport,
+  resizable = true,
+  width = MINI_WINDOW_WIDTH,
+  defaultHeight = MINI_WINDOW_MIN_HEIGHT,
+  minHeight = MINI_WINDOW_MIN_HEIGHT,
+  maxHeight = MINI_WINDOW_MAX_HEIGHT,
 }) {
-  const [internalOpen, setInternalOpen] = useState(defaultOpen)
-  const open = controlledOpen !== undefined ? controlledOpen : internalOpen
-  const setOpen = useCallback(
-    (valueOrUpdater) => {
-      const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(open) : valueOrUpdater
-      if (onOpenChange) onOpenChange(id, next)
-      else setInternalOpen(next)
-    },
-    [id, open, onOpenChange]
-  )
+  const [internalVisible, setInternalVisible] = useState(defaultOpen)
+  const [collapsed, setCollapsed] = useState(false)
   const [locked, setLocked] = useState(false)
-  const draggable = initialDraggable && !locked
-  const [dragging, setDragging] = useState(false)
   const [resizing, setResizing] = useState(false)
-  const [height, setHeight] = useState(MINI_WINDOW_MIN_HEIGHT)
-  const [zIndex, setZIndex] = useState(50)
-  const dragRef = useRef({ active: false, startX: 0, startY: 0, startLeft: 0, startTop: 0 })
+  const [height, setHeight] = useState(() => Math.max(minHeight, Math.min(maxHeight, defaultHeight)))
   const resizeRef = useRef({ active: false, startY: 0, startHeight: 0 })
-  const didDragRef = useRef(false)
-  const topZRef = useRef(100)
-  const rootRef = useRef(null)
+
+  const visible = controlledOpen !== undefined ? controlledOpen : internalVisible
+  const draggable = initialDraggable && !locked
+  const left = docked ? 0 : (fixedLeft ?? 0)
+  const top = docked ? 0 : (fixedTop ?? 0)
+  const positionMode = docked ? 'absolute' : 'fixed'
+
+  const setVisible = useCallback((valueOrUpdater) => {
+    const next = typeof valueOrUpdater === 'function' ? valueOrUpdater(visible) : valueOrUpdater
+    if (onOpenChange) onOpenChange(id, next)
+    else setInternalVisible(next)
+  }, [id, onOpenChange, visible])
 
   useEffect(() => {
-    const el = rootRef.current
+    const el = document.getElementById(id)
     if (!el || !onSizeReport) return
     const report = () => {
       const rect = el.getBoundingClientRect()
@@ -65,201 +61,137 @@ export default function MiniWindow({
     const ro = new ResizeObserver(report)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [id, onSizeReport])
+  }, [id, onSizeReport, visible, collapsed])
+
+  const onResizeMove = useCallback((event) => {
+    if (!resizeRef.current.active) return
+    const dy = event.clientY - resizeRef.current.startY
+    const next = Math.max(minHeight, Math.min(maxHeight, resizeRef.current.startHeight + dy))
+    setHeight(next)
+  }, [maxHeight, minHeight])
+
+  const onResizeUp = useCallback(() => {
+    if (!resizeRef.current.active) return
+    resizeRef.current.active = false
+    setResizing(false)
+  }, [])
 
   useEffect(() => {
-    if (!onSizeReport || !rootRef.current) return
-    const raf = requestAnimationFrame(() => {
-      const el = rootRef.current
-      if (el) {
-        const rect = el.getBoundingClientRect()
-        onSizeReport(id, rect.width, rect.height)
-      }
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [open, id, onSizeReport])
-
-  const left = docked ? 0 : (fixedLeft ?? 0)
-  const top = docked ? 0 : (fixedTop ?? 0)
-  const positionMode = docked ? 'absolute' : 'fixed'
-
-  const onHeaderMouseDown = useCallback(
-    (e) => {
-      if (!draggable || e.button !== 0) return
-      e.preventDefault()
-      didDragRef.current = false
-      setDragging(true)
-      setZIndex(1000)
-      dragRef.current = {
-        active: true,
-        startX: e.clientX,
-        startY: e.clientY,
-        startLeft: left,
-        startTop: top,
-      }
-    },
-    [draggable, left, top]
-  )
-
-  const onMouseMove = useCallback(
-    (e) => {
-      if (resizeRef.current.active) {
-        const dy = e.clientY - resizeRef.current.startY
-        const newHeight = Math.max(
-          MINI_WINDOW_MIN_HEIGHT,
-          Math.min(MINI_WINDOW_MAX_HEIGHT, resizeRef.current.startHeight + dy)
-        )
-        setHeight(newHeight)
-        return
-      }
-      if (!dragRef.current.active || !onPositionChange) return
-      didDragRef.current = true
-      const newLeft = dragRef.current.startLeft + (e.clientX - dragRef.current.startX)
-      const newTop = dragRef.current.startTop + (e.clientY - dragRef.current.startY)
-      onPositionChange(id, newLeft, newTop)
-    },
-    [id, onPositionChange]
-  )
-
-  const onMouseUp = useCallback(
-    (e) => {
-      if (resizeRef.current.active) {
-        setResizing(false)
-        setZIndex(50)
-        resizeRef.current.active = false
-        return
-      }
-      if (dragRef.current.active) {
-        setDragging(false)
-        setZIndex(50)
-        if (onDragEnd && id) {
-          const root = rootRef.current
-          let panelId = null
-          if (root) {
-            const prev = root.style.pointerEvents
-            root.style.pointerEvents = 'none'
-            const under = document.elementFromPoint(e.clientX, e.clientY)
-            const panelEl = under?.closest('[data-panel]')
-            panelId = panelEl?.getAttribute('data-panel') ?? null
-            root.style.pointerEvents = prev
-          }
-          onDragEnd(id, e.clientX, e.clientY, panelId, left, top)
-        }
-      }
-      dragRef.current.active = false
-    },
-    [onDragEnd, id]
-  )
-
-  const onResizeHandleMouseDown = useCallback((e) => {
-    if (e.button !== 0) return
-    e.preventDefault()
-    e.stopPropagation()
-    setResizing(true)
-    setZIndex(1000)
-    resizeRef.current = { active: true, startY: e.clientY, startHeight: height }
-  }, [height])
-
-  useEffect(() => {
-    if (!draggable && !resizing) return
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    if (!resizing) return
+    window.addEventListener('mousemove', onResizeMove)
+    window.addEventListener('mouseup', onResizeUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onResizeMove)
+      window.removeEventListener('mouseup', onResizeUp)
     }
-  }, [draggable, resizing, onMouseMove, onMouseUp])
+  }, [onResizeMove, onResizeUp, resizing])
 
-  const bringToFront = useCallback(() => {
-    if (!dragging) {
-      topZRef.current += 1
-      setZIndex(topZRef.current)
-    }
-  }, [dragging])
+  if (!visible) return null
 
   return (
-    <div
-      ref={rootRef}
+    <UIWindow
       id={id}
-      className={`rounded border border-ot-border bg-ot-panel overflow-hidden flex flex-col ${className}`}
-      style={{
-        position: positionMode,
-        left: `${Number(left) || 0}px`,
-        top: `${Number(top) || 0}px`,
-        right: 'auto',
-        bottom: 'auto',
-        zIndex,
-        width: MINI_WINDOW_WIDTH,
-        height: open ? height : MINI_WINDOW_HEADER_HEIGHT,
-        minHeight: open ? MINI_WINDOW_MIN_HEIGHT : MINI_WINDOW_HEADER_HEIGHT,
-        maxHeight: open ? MINI_WINDOW_MAX_HEIGHT : MINI_WINDOW_HEADER_HEIGHT,
+      title={title}
+      icon={icon}
+      position={positionMode}
+      left={left}
+      top={top}
+      width={Number(width) || MINI_WINDOW_WIDTH}
+      height={collapsed ? MINI_WINDOW_HEADER_HEIGHT : height}
+      minHeight={collapsed ? MINI_WINDOW_HEADER_HEIGHT : minHeight}
+      maxHeight={collapsed ? MINI_WINDOW_HEADER_HEIGHT : maxHeight}
+      draggable={draggable}
+      movable
+      onPositionChange={onPositionChange}
+      onDragEnd={(windowId, clientX, clientY) => {
+        if (!onDragEnd) return
+        const root = document.getElementById(windowId)
+        let panelId = null
+        if (root) {
+          const prev = root.style.pointerEvents
+          root.style.pointerEvents = 'none'
+          const under = document.elementFromPoint(clientX, clientY)
+          const panelEl = under?.closest('[data-panel]')
+          panelId = panelEl?.getAttribute('data-panel') ?? null
+          root.style.pointerEvents = prev
+        }
+        onDragEnd(windowId, clientX, clientY, panelId, left, top)
       }}
+      className={`rounded bg-ot-panel overflow-hidden ${className}`}
+      headerClassName={`hover:bg-ot-hover ${headerClassName}`}
+      headerHeight={MINI_WINDOW_HEADER_HEIGHT}
+      renderHeaderActions={() => (
+        <>
+          <button
+            type="button"
+            className="w-4 h-4 flex items-center justify-center rounded hover:bg-ot-hover text-ot-text/80 text-[10px]"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              setLocked((value) => !value)
+            }}
+            title={locked ? 'Destravar' : 'Travar'}
+          >
+            <span
+              className="w-[14px] h-[14px] bg-no-repeat"
+              style={{
+                backgroundImage: `url('${MINIWINDOW_BUTTONS_IMG}')`,
+                backgroundPosition: locked ? '-84px 0px' : '-98px 0px',
+              }}
+            />
+          </button>
+          <button
+            type="button"
+            className="w-4 h-4 flex items-center justify-center rounded hover:bg-ot-hover text-ot-text/80 text-[10px]"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              setCollapsed((value) => !value)
+            }}
+            title={collapsed ? 'Expandir' : 'Recolher'}
+          >
+            {collapsed ? '+' : '-'}
+          </button>
+          <button
+            type="button"
+            className="w-4 h-4 flex items-center justify-center rounded hover:bg-ot-hover text-ot-text/80 text-[10px]"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              setVisible(false)
+            }}
+            title="Fechar"
+          >
+            x
+          </button>
+        </>
+      )}
     >
-      <div
-        role="button"
-        tabIndex={0}
-        onMouseDown={onHeaderMouseDown}
-        onClick={bringToFront}
-        onDoubleClick={() => {
-          if (!didDragRef.current) setOpen(!open)
-        }}
-        className={`flex items-center gap-1 px-1 py-0.5 border-b border-ot-border cursor-pointer select-none hover:bg-ot-hover ${headerClassName}`}
-        style={{ cursor: draggable && !resizing ? (dragging ? 'grabbing' : 'grab') : 'default' }}
-        title={draggable ? 'Arraste para mover • Solte sobre um painel para acoplar • Duplo clique para expandir/recolher' : 'Janela travada'}
-      >
-        {icon && (
-          <div
-            className="w-3 h-3 rounded flex-shrink-0 bg-no-repeat bg-[length:auto_100%] bg-[position:0_0] bg-ot-text/30"
-            style={{ backgroundImage: `url('${typeof icon === 'string' ? icon : IMG.miniborder}')`, backgroundSize: 'auto' }}
-          />
-        )}
-        <span className="text-ot-text-bright text-[11px] font-verdana flex-1 truncate">{title}</span>
-        <button
-          type="button"
-          className="w-4 h-4 flex items-center justify-center rounded hover:bg-ot-hover text-ot-text/80 text-[10px] flex-shrink-0"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            setLocked((l) => !l)
-          }}
-          title={locked ? 'Destravar' : 'Travar'}
-        >
-          {locked ? '🔒' : '🔓'}
-        </button>
-        <button
-          type="button"
-          className="w-4 h-4 flex items-center justify-center rounded hover:bg-ot-hover text-ot-text/80 text-[10px] flex-shrink-0"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (didDragRef.current) {
-              didDragRef.current = false
-              return
-            }
-            setOpen(!open)
-          }}
-          title={open ? 'Recolher' : 'Expandir'}
-        >
-          {open ? '−' : '+'}
-        </button>
-      </div>
-      {open && (
+      {!collapsed && (
         <>
           <div className="flex-1 min-h-0 min-w-0 overflow-x-hidden overflow-y-auto flex flex-col">
             {children}
           </div>
-          <div
-            role="separator"
-            aria-label="Redimensionar altura"
-            className="flex-shrink-0 w-full bg-ot-border hover:bg-ot-border/80 cursor-ns-resize flex items-center justify-center group"
-            style={{ height: RESIZE_HANDLE_HEIGHT }}
-            onMouseDown={onResizeHandleMouseDown}
-            title="Arraste para redimensionar a altura"
-          >
-            <span className="w-8 h-0.5 rounded-full bg-ot-text/30 group-hover:bg-ot-text/50" />
-          </div>
+          {resizable && (
+            <div
+              role="separator"
+              aria-label="Redimensionar altura"
+              className="flex-shrink-0 w-full bg-ot-border hover:bg-ot-border/80 cursor-ns-resize flex items-center justify-center group"
+              style={{ height: RESIZE_HANDLE_HEIGHT }}
+              onMouseDown={(event) => {
+                if (event.button !== 0) return
+                event.preventDefault()
+                event.stopPropagation()
+                resizeRef.current = { active: true, startY: event.clientY, startHeight: height }
+                setResizing(true)
+              }}
+              title="Arraste para redimensionar a altura"
+            >
+              <span className="w-8 h-0.5 rounded-full bg-ot-text/30 group-hover:bg-ot-text/50" />
+            </div>
+          )}
         </>
       )}
-    </div>
+    </UIWindow>
   )
 }

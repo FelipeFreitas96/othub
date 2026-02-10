@@ -21,7 +21,7 @@ export default function ClientBackground() {
       />
       {/* clientVersionLabel - anchors right/bottom, width 120, background #00000099 */}
       <div
-        className="absolute right-0 bottom-0 w-[120px] bg-black/60 text-white text-[11px] font-verdana p-1.5 text-center leading-tight animate-in fade-in duration-[1500ms]"
+        className="absolute right-0 bottom-0 w-[120px] bg-black/60 text-white text-[11px] font-verdana font-bold p-1.5 text-center leading-tight animate-in fade-in duration-[1500ms]"
         aria-label="Versão do cliente"
       >
         {CLIENT_VERSION.split('\n').map((line, i) => (

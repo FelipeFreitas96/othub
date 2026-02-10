@@ -41,6 +41,7 @@ export default function SkillRow({
         marginBottom,
         marginTop: marginTop ?? 0,
         fontSize: 11,
+        fontWeight: 'bold',
         color: '#C0C0C0',
         fontFamily: 'Verdana, sans-serif',
       }}

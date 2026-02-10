@@ -40,7 +40,7 @@ export const CLIENT_VERSIONS = [
 
 /** Default server configuration */
 export const DEFAULT_SERVER = {
-    host: 'amirots.com',
+    host: 'sv.nightmareserver.com.br',
     port: '7171',
     clientVersion: '860',
 }

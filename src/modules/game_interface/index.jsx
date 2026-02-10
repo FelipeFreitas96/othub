@@ -9,6 +9,8 @@ import Minimap from '../game_minimap'
 import Inventory from '../game_inventory'
 import BattleList from '../game_battle'
 import Skills from '../game_skills'
+import Containers from '../game_containers'
+import ClientOptions from '../client_options'
 
 /**
  * Layout principal - gameinterface.otui
@@ -19,14 +21,16 @@ const WINDOW_IDS = {
   inventoryWindow: Inventory,
   battleWindow: BattleList,
   skillWindow: Skills,
+  containersWindow: Containers,
+  optionsWindow: ClientOptions,
 }
 
 export default function GameInterface() {
   const [bottomPanelHeight, setBottomPanelHeight] = useState(200)
   const [leftWindows, setLeftWindows] = useState(['minimapWindow', 'inventoryWindow'])
-  const [rightWindows, setRightWindows] = useState(['battleWindow', 'skillWindow'])
+  const [rightWindows, setRightWindows] = useState(['battleWindow', 'skillWindow', 'containersWindow'])
   const [panelRects, setPanelRects] = useState({ left: null, right: null })
-  const [positions, setPositions] = useState({})
+  const [positions, setPositions] = useState({ optionsWindow: { x: 220, y: 80 } })
   const [windowSizes, setWindowSizes] = useState({})
   const [windowOpen, setWindowOpen] = useState({})
   const leftPanelRef = useRef(null)
@@ -74,6 +78,16 @@ export default function GameInterface() {
 
   const handleOpenChange = useCallback((windowId, open) => {
     setWindowOpen((prev) => ({ ...prev, [windowId]: open }))
+  }, [])
+
+  useEffect(() => {
+    const onTopmenuToggleWindow = (event) => {
+      const windowId = event?.detail?.windowId
+      if (!windowId || !WINDOW_IDS[windowId]) return
+      setWindowOpen((prev) => ({ ...prev, [windowId]: !(prev[windowId] ?? true) }))
+    }
+    window.addEventListener('ot:topmenuToggleWindow', onTopmenuToggleWindow)
+    return () => window.removeEventListener('ot:topmenuToggleWindow', onTopmenuToggleWindow)
   }, [])
 
   /** Y do topo do slot no painel: painel vazio → topo (PANEL_PADDING); com elementos → topo do slot (acima/abaixo conforme getInsertIndex). */
@@ -201,7 +215,13 @@ export default function GameInterface() {
             </div>
           )}
         </div>
-        <GameMapPanel />
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+          <div className="flex-1 min-h-0 min-w-0">
+            <GameMapPanel />
+          </div>
+          <BottomSplitter height={bottomPanelHeight} onHeightChange={setBottomPanelHeight} />
+          <GameBottomPanel height={bottomPanelHeight} />
+        </div>
         <div ref={rightPanelRef} data-panel="right" className="relative z-10 flex-shrink-0 self-stretch min-h-0">
           <GameRightPanel panelId="right" />
           {rightConfigs.length > 0 && panelRects.right && (
@@ -247,9 +267,6 @@ export default function GameInterface() {
           />
         )
       })}
-
-      <BottomSplitter height={bottomPanelHeight} onHeightChange={setBottomPanelHeight} />
-      <GameBottomPanel height={bottomPanelHeight} />
     </div>
   )
 }

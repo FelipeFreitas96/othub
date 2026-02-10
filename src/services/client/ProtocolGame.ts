@@ -7,9 +7,11 @@ import { generateXteaKey, getRsaKeySize, rsaEncrypt } from '../protocol/crypto'
 import { getProtocolInfo, OTSERV_RSA } from '../protocol/protocolInfo'
 import { OutputMessage } from '../protocol/outputMessage'
 import { InputMessage } from '../protocol/inputMessage'
+import { isFeatureEnabled } from '../protocol/features'
 import { g_game, getGameClientVersion } from './Game'
 import { ProtocolGameParse, GAME_CLIENT_OPCODES, ParseContext } from './ProtocolGameParse'
 import { MessageModeEnum } from './Const'
+import { Direction, Position } from './Position'
 
 export class ProtocolGame {
   m_accountName: string = ''
@@ -26,6 +28,15 @@ export class ProtocolGame {
   m_lastRecvOpcode: number | null = null
 
   constructor() {
+  }
+
+  private addPosition(msg: OutputMessage, pos: Position | { x: number, y: number, z: number }) {
+    const x = Number(pos?.x ?? 0) & 0xffff
+    const y = Number(pos?.y ?? 0) & 0xffff
+    const z = Number(pos?.z ?? 0) & 0xff
+    msg.addU16(x)
+    msg.addU16(y)
+    msg.addU8(z)
   }
 
   /** OTC: ProtocolGame::login – protocolgame.cpp */
@@ -250,6 +261,52 @@ export class ProtocolGame {
     this.m_connection.send(msg.getRawBuffer())
   }
 
+  /** OTC: ProtocolGame::sendAutoWalk */
+  sendAutoWalk(path: number[]) {
+    if (!this.m_connection || !Array.isArray(path) || path.length === 0) return
+
+    const steps = path.slice(0, 127)
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientAutoWalk)
+    msg.addU8(steps.length)
+
+    for (const dir of steps) {
+      let byte = 0
+      switch (dir) {
+        case Direction.East:
+          byte = 1
+          break
+        case Direction.NorthEast:
+          byte = 2
+          break
+        case Direction.North:
+          byte = 3
+          break
+        case Direction.NorthWest:
+          byte = 4
+          break
+        case Direction.West:
+          byte = 5
+          break
+        case Direction.SouthWest:
+          byte = 6
+          break
+        case Direction.South:
+          byte = 7
+          break
+        case Direction.SouthEast:
+          byte = 8
+          break
+        default:
+          byte = 0
+          break
+      }
+      msg.addU8(byte)
+    }
+
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
   sendWalkEast() {
     if (!this.m_connection) return
     const msg = new OutputMessage()
@@ -303,6 +360,120 @@ export class ProtocolGame {
     if (!this.m_connection) return
     const msg = new OutputMessage()
     msg.addU8(0x69) // Proto::ClientStop
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendMove */
+  sendMove(fromPos: Position, thingId: number, stackPos: number, toPos: Position, count: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientMove)
+    this.addPosition(msg, fromPos)
+    msg.addU16(thingId & 0xffff)
+    msg.addU8(stackPos & 0xff)
+    this.addPosition(msg, toPos)
+    if (isFeatureEnabled('GameCountU16')) msg.addU16(Math.max(1, count) & 0xffff)
+    else msg.addU8(Math.max(1, count) & 0xff)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendUseItem */
+  sendUseItem(position: Position, itemId: number, stackPos: number, index: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientUseItem)
+    this.addPosition(msg, position)
+    msg.addU16(itemId & 0xffff)
+    msg.addU8(stackPos & 0xff)
+    msg.addU8(index & 0xff)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendUseItemWith */
+  sendUseItemWith(fromPos: Position, itemId: number, fromStackPos: number, toPos: Position, toThingId: number, toStackPos: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientUseItemWith)
+    this.addPosition(msg, fromPos)
+    msg.addU16(itemId & 0xffff)
+    msg.addU8(fromStackPos & 0xff)
+    this.addPosition(msg, toPos)
+    msg.addU16(toThingId & 0xffff)
+    msg.addU8(toStackPos & 0xff)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendUseOnCreature */
+  sendUseOnCreature(pos: Position, thingId: number, stackPos: number, creatureId: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientUseOnCreature)
+    this.addPosition(msg, pos)
+    msg.addU16(thingId & 0xffff)
+    msg.addU8(stackPos & 0xff)
+    msg.addU32(creatureId >>> 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendLook */
+  sendLook(position: Position, itemId: number, stackPos: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientLook)
+    this.addPosition(msg, position)
+    msg.addU16(itemId & 0xffff)
+    msg.addU8(stackPos & 0xff)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendLookCreature */
+  sendLookCreature(creatureId: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientLookCreature)
+    msg.addU32(creatureId >>> 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendAttack */
+  sendAttack(creatureId: number, seq: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientAttack)
+    msg.addU32(creatureId >>> 0)
+    if (isFeatureEnabled('GameAttackSeq')) msg.addU32(seq >>> 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendFollow */
+  sendFollow(creatureId: number, seq: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientFollow)
+    msg.addU32(creatureId >>> 0)
+    if (isFeatureEnabled('GameAttackSeq')) msg.addU32(seq >>> 0)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendCancelAttackAndFollow */
+  sendCancelAttackAndFollow() {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientCancelAttackAndFollow)
+    this.m_connection.send(msg.getRawBuffer())
+  }
+
+  /** OTC: ProtocolGame::sendChangeFightModes */
+  sendChangeFightModes(fightMode: number, chaseMode: number, safeFight: boolean, pvpMode: number) {
+    if (!this.m_connection) return
+    const msg = new OutputMessage()
+    msg.addU8(GAME_CLIENT_OPCODES.GameClientChangeFightModes)
+    msg.addU8(fightMode & 0xff)
+    msg.addU8(chaseMode & 0xff)
+    msg.addU8(safeFight ? 1 : 0)
+    if (isFeatureEnabled('GamePVPMode')) {
+      msg.addU8(pvpMode & 0xff)
+    }
     this.m_connection.send(msg.getRawBuffer())
   }
 

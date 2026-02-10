@@ -4,6 +4,7 @@
  */
 import { useState } from 'react'
 import { WINDOW_TITLE, ENTER_BUTTON_LABEL, BACK_BUTTON_LABEL } from '../service/characterListService'
+import MainWindow from '../../../../components/MainWindow'
 
 export default function CharacterListWindow({
   characters = [],
@@ -20,18 +21,7 @@ export default function CharacterListWindow({
   }
 
   return (
-    <div
-      className="relative z-10 w-[320px] rounded border-2 border-ot-border bg-ot-panel shadow-xl"
-      role="dialog"
-      aria-labelledby="characterlist-title"
-    >
-      <div
-        id="characterlist-title"
-        className="px-3 py-2 border-b border-ot-border text-ot-text-bright text-sm font-verdana"
-      >
-        {WINDOW_TITLE}
-      </div>
-
+    <MainWindow title={WINDOW_TITLE} width={320} height={360} draggable={false}>
       <div className="p-3 space-y-2 text-[11px]">
         {error && (
           <p className="text-red-400 text-[10px]" role="alert">
@@ -52,7 +42,7 @@ export default function CharacterListWindow({
                 selected?.id === char.id ? 'bg-white/15 text-ot-text-bright' : 'text-ot-text'
               }`}
             >
-              <span className="font-verdana">{char.name}</span>
+              <span className="font-verdana font-bold">{char.name}</span>
               <span className="text-ot-text/70 ml-2">
                 Level {char.level} · {char.vocation}
               </span>
@@ -74,12 +64,12 @@ export default function CharacterListWindow({
             type="button"
             onClick={handleEnter}
             disabled={!selected || loading}
-            className="flex-1 px-4 py-1.5 bg-ot-border-light border border-ot-border rounded hover:bg-ot-text/20 text-ot-text-bright text-[11px] font-verdana disabled:opacity-50"
+            className="flex-1 px-4 py-1.5 bg-ot-border-light border border-ot-border rounded hover:bg-ot-text/20 text-ot-text-bright text-[11px] font-verdana font-bold disabled:opacity-50"
           >
             {loading ? 'Entering...' : ENTER_BUTTON_LABEL}
           </button>
         </div>
       </div>
-    </div>
+    </MainWindow>
   )
 }

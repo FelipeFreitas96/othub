@@ -948,7 +948,7 @@ export class DrawPool {
         const img = d.texture && (d.texture as HTMLCanvasElement).getContext ? d.texture as HTMLCanvasElement : null
         if (img) ctx.drawImage(img, d.x - minX, d.y - minY, 12, 12)
       } else if (d.type === 'text') {
-        ctx.font = '14px sans-serif'
+        ctx.font = 'bold 14px sans-serif'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'alphabetic'
         const cx = d.rect.x - minX + d.rect.width / 2

@@ -59,7 +59,7 @@ export default function EnterGame({ onLogin, onLoginSuccess }) {
       {/* Título - EnterGameWindow !text: tr('Enter Game') */}
       <div
         id="entergame-title"
-        className="px-3 py-2 border-b border-ot-border text-ot-text-bright text-sm font-verdana"
+        className="px-3 py-2 border-b border-ot-border text-ot-text-bright text-sm font-verdana font-bold"
       >
         Enter Game
       </div>
@@ -198,7 +198,7 @@ export default function EnterGame({ onLogin, onLoginSuccess }) {
           <button
             type="submit"
             disabled={loading}
-            className="px-4 py-1.5 bg-ot-border-light border border-ot-border rounded hover:bg-ot-text/20 text-ot-text-bright text-[11px] font-verdana w-[86px] disabled:opacity-50"
+            className="px-4 py-1.5 bg-ot-border-light border border-ot-border rounded hover:bg-ot-text/20 text-ot-text-bright text-[11px] font-verdana font-bold w-[86px] disabled:opacity-50"
           >
             {loading ? 'Connecting...' : 'Login'}
           </button>

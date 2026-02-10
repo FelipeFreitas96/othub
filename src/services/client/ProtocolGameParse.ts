@@ -110,6 +110,11 @@ export const GAME_CLIENT_OPCODES = {
   GameClientEnterGame: 15,
   GameClientPing: 29,
   GameClientPingBack: 30,
+  GameClientAutoWalk: 100,
+  GameClientMove: 120,
+  GameClientUseItem: 130,
+  GameClientUseItemWith: 131,
+  GameClientUseOnCreature: 132,
   GameClientWalkNorth: 0x65,
   GameClientWalkEast: 0x66,
   GameClientWalkSouth: 0x67,
@@ -118,11 +123,17 @@ export const GAME_CLIENT_OPCODES = {
   GameClientWalkSoutheast: 0x6B,
   GameClientWalkSouthwest: 0x6C,
   GameClientWalkNorthwest: 0x6D,
+  GameClientLook: 140,
+  GameClientLookCreature: 141,
   GameClientTalk: 150,
   GameClientRequestChannels: 151,
   GameClientJoinChannel: 152,
   GameClientLeaveChannel: 153,
   GameClientOpenPrivateChannel: 154,
+  GameClientChangeFightModes: 160,
+  GameClientAttack: 161,
+  GameClientFollow: 162,
+  GameClientCancelAttackAndFollow: 190,
 }
 
 /** OTC Otc::Direction – mapeamento opcode walk → direção (North=0, East=1, South=2, West=3, NE=4, NW=5, SE=6, SW=7). */
@@ -817,10 +828,12 @@ export class ProtocolGameParse {
     const characterSkillStats = isFeatureEnabled('GameCharacterSkillStats')
 
     if (clientVersion >= 1281) {
-      msg.getU16()
-      msg.getU16()
-      msg.getU16()
-      msg.getU16()
+      const magicLevel = msg.getU16()
+      const baseMagicLevel = msg.getU16()
+      msg.getU16() // base + loyalty bonus
+      const percent = Math.floor((msg.getU16() || 0) / 100)
+      g_player.setMagicLevel(magicLevel, percent)
+      g_player.setBaseMagicLevel(baseMagicLevel)
     }
 
     for (let skill = SkillEnum.SKILL_FIST; skill <= SkillEnum.SKILL_FISHING; skill++) {
@@ -859,36 +872,55 @@ export class ProtocolGameParse {
         g_player.setSkill(skill, level, 0)
         g_player.setBaseSkill(skill, baseLevel)
       }
+      const capacity = msg.getU32()
       msg.getU32()
-      msg.getU32()
-      g_player.setTotalCapacity(msg.getU32())
+      g_player.setTotalCapacity(capacity)
     }
 
     if (characterSkillStats) {
+      const capacity = msg.getU32()
       msg.getU32()
-      msg.getU32()
-      g_player.setTotalCapacity(msg.getU32())
-      msg.getU16()
-      msg.getU16()
-      msg.getU8()
-      msg.getDouble()
-      msg.getU8()
-      msg.getDouble()
-      msg.getDouble()
-      msg.getDouble()
-      msg.getDouble()
-      msg.getDouble()
-      msg.getU16()
-      msg.getU16()
-      if (clientVersion >= 1500) msg.getU16()
-      msg.getDouble()
-      msg.getDouble()
-      msg.getU16()
+      g_player.setTotalCapacity(capacity)
+
+      const flatBonus = msg.getU16()
+      g_player.setFlatDamageHealing(flatBonus)
+
+      const attackValue = msg.getU16()
+      const attackElement = msg.getU8()
+      g_player.setAttackInfo(attackValue, attackElement)
+
+      const convertedDamage = msg.getDouble()
+      const convertedElement = msg.getU8()
+      g_player.setConvertedDamage(convertedDamage, convertedElement)
+
+      const lifeLeech = msg.getDouble()
+      const manaLeech = msg.getDouble()
+      const critChance = msg.getDouble()
+      const critDamage = msg.getDouble()
+      const onslaught = msg.getDouble()
+      g_player.setImbuements(lifeLeech, manaLeech, critChance, critDamage, onslaught)
+
+      const defense = msg.getU16()
+      const armor = msg.getU16()
+      if (clientVersion >= 1500) msg.getU16() // mantra total
+      const mitigation = msg.getDouble()
+      const dodge = msg.getDouble()
+      const damageReflection = msg.getU16()
+      g_player.setDefenseInfo(defense, armor, mitigation, dodge, damageReflection)
+
       const combatsCount = msg.getU8()
+      const absorbValues: Record<number, number> = {}
       for (let i = 0; i < combatsCount; i++) {
-        msg.getU8()
-        msg.getDouble()
+        const combatType = msg.getU8()
+        const value = msg.getDouble()
+        absorbValues[combatType] = value
       }
+      g_player.setCombatAbsorbValues(absorbValues)
+
+      const momentum = msg.getDouble()
+      const transcendence = msg.getDouble()
+      const amplification = msg.getDouble()
+      g_player.setForgeBonuses(momentum, transcendence, amplification)
     }
   }
 
@@ -1271,14 +1303,21 @@ export class ProtocolGameParse {
 
     if (expBonus) {
       if (clientVersion <= 1096) {
-        msg.getDouble()
+        const experienceBonus = msg.getDouble()
+        g_player.setExperienceRate(0, Math.floor(experienceBonus * 100))
       } else {
-        msg.getU16()
-        if (clientVersion < 1281) msg.getU16()
-        msg.getU16()
-        msg.getU16()
-        msg.getU16()
-        msg.getU16()
+        const baseXpGain = msg.getU16()
+        g_player.setExperienceRate(0, baseXpGain)
+        if (clientVersion < 1281) {
+          const voucherAddend = msg.getU16()
+          g_player.setExperienceRate(1, voucherAddend)
+        }
+        const grindingAddend = msg.getU16()
+        g_player.setExperienceRate(2, grindingAddend)
+        const storeBoostAddend = msg.getU16()
+        g_player.setExperienceRate(3, storeBoostAddend)
+        const huntingBoostFactor = msg.getU16()
+        g_player.setExperienceRate(4, huntingBoostFactor)
       }
     }
 
@@ -1297,13 +1336,12 @@ export class ProtocolGameParse {
 
     const soulVal = soul ? msg.getU8() : 0
     const staminaVal = stamina ? msg.getU16() : 0
-    // @ts-ignore
     const baseSpeed = skillsBase ? msg.getU16() : 0
     const regeneration = regen ? msg.getU16() : 0
     const training = offlineTrain ? msg.getU16() : 0
 
     if (clientVersion >= 1097) {
-      msg.getU16()
+      g_player.setStoreExpBoostTime(msg.getU16())
       msg.getU8()
     }
 
@@ -1323,8 +1361,14 @@ export class ProtocolGameParse {
     g_player.setExperience(experience)
     g_player.setLevel(level, levelPercent)
     g_player.setMana(mana, maxMana)
+    if (clientVersion >= 1281) {
+      g_player.setManaShield(manaShield, maxManaShield)
+    } else {
+      g_player.setManaShield(0, 0)
+    }
     g_player.setSoul(soulVal)
     g_player.setStamina(staminaVal)
+    g_player.setBaseSpeed(baseSpeed)
     g_player.setRegenerationTime(regeneration)
     g_player.setOfflineTrainingTime(training)
   }
@@ -1336,6 +1380,70 @@ export class ProtocolGameParse {
     let oldPos: Position | null = null
     let stackPos = -1
     let creatureId = 0
+
+    const isCreatureThing = (value: Thing | null): value is Creature =>
+      !!value && value.isCreature?.() === true
+
+    const samePos = (a: Position | null | undefined, b: Position | null | undefined): boolean =>
+      !!a &&
+      !!b &&
+      a.x === b.x &&
+      a.y === b.y &&
+      a.z === b.z
+
+    const removeCreatureByIdFromTiles = (id: number | string): boolean => {
+      let removed = false
+      const numId = Number(id)
+      for (const tile of g_map.tiles.values()) {
+        if (!tile?.m_things?.length) continue
+        for (let i = tile.m_things.length - 1; i >= 0; i--) {
+          const t = tile.m_things[i]
+          if (!t?.isCreature?.()) continue
+          if (Number(t.getId?.()) !== numId) continue
+          tile.m_things.splice(i, 1)
+          removed = true
+        }
+      }
+      return removed
+    }
+
+    const resolveCreatureFromOldTile = (pos: Position, wantedStack: number, toPos: Position): Creature | null => {
+      const tile: any = g_map.getTile(pos)
+      if (!tile) return null
+
+      const stackList: Thing[] = Array.isArray(tile.m_things) ? tile.m_things : []
+      const stackCreatures: Array<{ creature: Creature; stack: number }> = []
+      for (let i = 0; i < stackList.length; i++) {
+        const t = stackList[i]
+        if (!t?.isCreature?.()) continue
+        stackCreatures.push({ creature: t as Creature, stack: i })
+      }
+
+      if (stackCreatures.length === 0) return null
+
+      const byExactStack = stackCreatures.find((entry) => entry.stack === wantedStack)?.creature ?? null
+      if (byExactStack) return byExactStack
+
+      const byStep = stackCreatures.find((entry) => {
+        const c = entry.creature
+        const lastFrom = (c as any).m_lastStepFromPosition as Position | null | undefined
+        const lastTo = (c as any).m_lastStepToPosition as Position | null | undefined
+        if (samePos(lastFrom, pos) && samePos(lastTo, toPos)) return true
+        if (samePos(lastTo, toPos)) return true
+        return false
+      })?.creature ?? null
+      if (byStep) return byStep
+
+      const localPlayerId = g_player.getId?.()
+      if (localPlayerId != null) {
+        const localPlayer = stackCreatures.find((entry) => Number(entry.creature.getId?.()) === Number(localPlayerId))?.creature ?? null
+        if (localPlayer) return localPlayer
+      }
+
+      // Stack mismatch fallback: choose nearest creature stack index.
+      stackCreatures.sort((a, b) => Math.abs(a.stack - wantedStack) - Math.abs(b.stack - wantedStack))
+      return stackCreatures[0]?.creature ?? null
+    }
 
     if (x !== 0xffff) {
       const y = msg.getU16()
@@ -1356,26 +1464,20 @@ export class ProtocolGameParse {
 
     // Desync recovery only for creature move packets: never reuse this fallback for tile add/remove/transform.
     if ((!thing || !thing.isCreature()) && oldPos) {
-      const tile = g_map.getTile(oldPos)
-      const creatures = tile?.m_things?.filter((t) => t.isCreature?.()) ?? []
-      if (creatures.length === 1) {
-        thing = creatures[0]
-      } else if (creatures.length > 1) {
-        const localPlayerId = g_player.getId?.()
-        if (localPlayerId != null) {
-          thing = creatures.find((c) => Number(c.getId?.()) === Number(localPlayerId)) ?? null
-        }
-        if (!thing) {
-          const byLastStep = creatures.find((c) => {
-            const lastTo = (c as Creature).m_lastStepToPosition
-            return !!lastTo && lastTo.x === newPos.x && lastTo.y === newPos.y && lastTo.z === newPos.z
-          })
-          if (byLastStep) thing = byLastStep
-        }
+      thing = resolveCreatureFromOldTile(oldPos, stackPos, newPos)
+    }
+
+    // Fallback: known creature still positioned at oldPos in map state.
+    if (!isCreatureThing(thing) && oldPos) {
+      for (const known of g_map.creatures.values()) {
+        const pos = known.getPosition?.()
+        if (!samePos(pos, oldPos)) continue
+        thing = known
+        break
       }
     }
 
-    if (!thing || !thing.isCreature()) {
+    if (!isCreatureThing(thing)) {
       if (oldPos) {
         console.error(`ProtocolGame::parseCreatureMove: no creature found to move (oldPos=${oldPos.x},${oldPos.y},${oldPos.z} stack=${stackPos} newPos=${newPos.x},${newPos.y},${newPos.z})`)
       } else {
@@ -1384,14 +1486,24 @@ export class ProtocolGameParse {
       return
     }
 
-    const creature = thing as Creature
-    if (!g_map.removeThing(thing)) {
+    const creature = thing
+    let removed = g_map.removeThing(creature as unknown as Thing)
+    if (!removed) {
+      const found = g_map.findCreaturePosition(creature.getId?.() as number | string)
+      if (found) {
+        removed = g_map.removeThingByPos(new Position(found.pos.x, found.pos.y, found.pos.z), found.stackPos)
+      }
+    }
+    if (!removed) {
+      removed = removeCreatureByIdFromTiles(creature.getId?.() as number | string)
+    }
+    if (!removed) {
       console.error("ProtocolGame::parseCreatureMove: unable to remove creature");
       return
     }
 
     creature.allowAppearWalk()
-    g_map.addThing(thing, newPos, -1)
+    g_map.addThing(creature as unknown as Thing, newPos, -1)
   }
 
   setTileDescriptionAt(msg: InputMessage, tilePos: Position) {
@@ -1973,6 +2085,7 @@ export class ProtocolGameParse {
   parsePlayerCancelAttack(msg: InputMessage) {
     if (msg.canRead(1)) msg.getU8()
     g_player.setAttackTarget?.(null)
+    g_game.setAttackingCreature?.(null)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:clearTarget'))
     }
@@ -1983,20 +2096,30 @@ export class ProtocolGameParse {
     const containerPagination = isFeatureEnabled('GameContainerPagination')
     const containerFilter = isFeatureEnabled('GameContainerFilter')
 
-    msg.getU8()
-    this.getItem(msg)
-    msg.getString()
-    msg.getU8()
-    msg.getU8()
+    const containerId = msg.getU8()
+    const containerItem = this.getItem(msg)
+    const name = msg.getString()
+    const capacity = msg.getU8()
+    const hasParent = msg.getU8() !== 0
     if (clientVersion >= 1281) msg.getU8()
+    let firstIndex = 0
+    let hasPages = false
+    let totalItems = 0
     if (containerPagination) {
-      msg.getU8()
-      msg.getU8()
+      hasPages = msg.getU8() !== 0
+      firstIndex = msg.getU8()
       msg.getU16()
-      msg.getU16()
+      totalItems = msg.getU16()
     }
     const itemCount = msg.getU8()
-    for (let i = 0; i < itemCount; i++) this.getItem(msg)
+    const items: Item[] = []
+    for (let i = 0; i < itemCount; i++) {
+      const item = this.getItem(msg)
+      if (item) {
+        item.setPosition(new Position(0xffff, (containerId | 0x40) & 0xff, i & 0xff), 0)
+        items.push(item)
+      }
+    }
     if (containerFilter) {
       msg.getU8()
       const categoriesSize = msg.getU8()
@@ -2010,14 +2133,16 @@ export class ProtocolGameParse {
       msg.getU8()
     }
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ot:containerOpen', { detail: { itemCount } }))
+      window.dispatchEvent(new CustomEvent('ot:containerOpen', {
+        detail: { containerId, containerItem, name, capacity, hasParent, itemCount, items, hasPages, firstIndex, totalItems },
+      }))
     }
   }
 
   parseCloseContainer(msg: InputMessage) {
-    msg.getU8()
+    const containerId = msg.getU8()
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('ot:containerClose'))
+      window.dispatchEvent(new CustomEvent('ot:containerClose', { detail: { containerId } }))
     }
   }
 
@@ -2038,6 +2163,7 @@ export class ProtocolGameParse {
     const containerId = msg.getU8()
     const slot = isFeatureEnabled('GameContainerPagination') ? msg.getU16() : 0
     const item = this.getItem(msg)
+    if (item) item.setPosition(new Position(0xffff, (containerId | 0x40) & 0xff, slot & 0xff), 0)
     g_game.processContainerAddItem?.(containerId, item, slot)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:containerAddItem', { detail: { containerId, slot, item } }))
@@ -2049,6 +2175,7 @@ export class ProtocolGameParse {
     const containerId = msg.getU8()
     const slot = isFeatureEnabled('GameContainerPagination') ? msg.getU16() : msg.getU8()
     const item = this.getItem(msg)
+    if (item) item.setPosition(new Position(0xffff, (containerId | 0x40) & 0xff, slot & 0xff), 0)
     g_game.processContainerUpdateItem?.(containerId, slot, item)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('ot:containerUpdateItem', { detail: { containerId, slot, item } }))
@@ -2062,7 +2189,10 @@ export class ProtocolGameParse {
     let lastItem: Item | null = null
     if (isFeatureEnabled('GameContainerPagination')) {
       const itemId = msg.getU16()
-      if (itemId !== 0) lastItem = this.getItem(msg)
+      if (itemId !== 0) {
+        lastItem = this.getItem(msg)
+        if (lastItem) lastItem.setPosition(new Position(0xffff, (containerId | 0x40) & 0xff, slot & 0xff), 0)
+      }
     }
     g_game.processContainerRemoveItem?.(containerId, slot, lastItem)
     if (typeof window !== 'undefined') {

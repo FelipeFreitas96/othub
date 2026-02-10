@@ -8,7 +8,7 @@
  */
 import { Creature } from './Creature'
 import { Player } from './Player'
-import { g_map } from './ClientMap'
+import { g_map, PathFindResultEnum } from './ClientMap'
 import { Position, PositionLike } from './Position'
 import { Item } from './Item'
 import { g_game } from './Game'
@@ -56,10 +56,35 @@ export class LocalPlayer extends Player {
   m_magicLevel: number
   m_magicLevelPercent: number
   m_baseMagicLevel: number
+  m_manaShield: number
+  m_maxManaShield: number
   m_soul: number
   m_stamina: number
   m_regenerationTime: number
   m_offlineTrainingTime: number
+  m_storeExpBoostTime: number
+  m_experienceRates: Record<number, number>
+  m_flatDamageHealing: number
+  m_attackValue: number
+  m_attackElement: number
+  m_convertedDamage: number
+  m_convertedElement: number
+  m_lifeLeech: number
+  m_manaLeech: number
+  m_critChance: number
+  m_critDamage: number
+  m_onslaught: number
+  m_defense: number
+  m_armor: number
+  m_mitigation: number
+  m_dodge: number
+  m_damageReflection: number
+  m_combatAbsorbValues: Record<number, number>
+  m_momentum: number
+  m_transcendence: number
+  m_amplification: number
+  m_harmony: number
+  m_serene: boolean
   m_totalCapacity: number
   m_premium: boolean
   m_known: boolean
@@ -99,10 +124,35 @@ export class LocalPlayer extends Player {
     this.m_magicLevel = -1
     this.m_magicLevelPercent = -1
     this.m_baseMagicLevel = -1
+    this.m_manaShield = 0
+    this.m_maxManaShield = 0
     this.m_soul = -1
     this.m_stamina = -1
     this.m_regenerationTime = -1
     this.m_offlineTrainingTime = -1
+    this.m_storeExpBoostTime = 0
+    this.m_experienceRates = {}
+    this.m_flatDamageHealing = 0
+    this.m_attackValue = 0
+    this.m_attackElement = 0
+    this.m_convertedDamage = 0
+    this.m_convertedElement = 0
+    this.m_lifeLeech = 0
+    this.m_manaLeech = 0
+    this.m_critChance = 0
+    this.m_critDamage = 0
+    this.m_onslaught = 0
+    this.m_defense = 0
+    this.m_armor = 0
+    this.m_mitigation = 0
+    this.m_dodge = 0
+    this.m_damageReflection = 0
+    this.m_combatAbsorbValues = {}
+    this.m_momentum = 0
+    this.m_transcendence = 0
+    this.m_amplification = 0
+    this.m_harmony = 0
+    this.m_serene = false
     this.m_totalCapacity = -1
     this.m_premium = false
     this.m_known = false
@@ -120,12 +170,36 @@ export class LocalPlayer extends Player {
     return this.m_attackTarget
   }
 
+  private emit(event: string, ...args: any[]) {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(
+      new CustomEvent(`localPlayer:${event}`, {
+        detail: { player: this, args },
+      })
+    )
+  }
+
   override getId(): number | string { return this.m_id }
   override setId(id: number | string | null) {
     this.m_id = id as number | string
   }
 
   override isLocalPlayer(): boolean { return true }
+
+  override setSpeed(speed: number) {
+    const oldSpeed = this.getSpeed()
+    super.setSpeed(speed)
+    if (oldSpeed !== this.getSpeed()) {
+      this.emit('onSpeedChange', this.getSpeed(), oldSpeed)
+    }
+  }
+
+  override setBaseSpeed(baseSpeed: number) {
+    const oldBaseSpeed = this.getBaseSpeed()
+    if (oldBaseSpeed === baseSpeed) return
+    super.setBaseSpeed(baseSpeed)
+    this.emit('onBaseSpeedChange', baseSpeed, oldBaseSpeed)
+  }
 
   unlockWalk() { this.m_walkLockExpiration = 0 }
 
@@ -248,12 +322,13 @@ export class LocalPlayer extends Player {
 
   retryAutoWalk() {
     if (!positionIsValid(this.m_autoWalkDestination)) return false
+    g_game.stop()
     if (this.m_autoWalkRetries <= 3) {
       if (this.m_autoWalkContinueEvent) clearTimeout(this.m_autoWalkContinueEvent)
-      const dest = { ...this.m_autoWalkDestination }
+      const dest = this.m_autoWalkDestination.clone()
       this.m_autoWalkContinueEvent = setTimeout(() => {
         this.m_autoWalkContinueEvent = null
-        this.autoWalk(dest)
+        this.autoWalk(dest, true)
       }, 200)
       this.m_autoWalkRetries += 1
       return true
@@ -294,17 +369,64 @@ export class LocalPlayer extends Player {
     }
   }
 
-  autoWalk(destination: PositionLike) {
+  autoWalk(destination: PositionLike, retry = false) {
     this.m_autoWalkDestination = null
     this.m_lastAutoWalkPosition = null
     if (this.m_autoWalkContinueEvent) {
       clearTimeout(this.m_autoWalkContinueEvent)
       this.m_autoWalkContinueEvent = null
     }
+
+    if (!retry) this.m_autoWalkRetries = 0
     if (!g_map || !positionIsValid(destination)) return false
-    if (positionEquals(destination, g_map.center)) return true
-    this.m_autoWalkDestination = destination instanceof Position ? destination.clone() : Position.from(destination)
-    this.lockWalk()
+
+    const destinationPos = destination instanceof Position ? destination.clone() : Position.from(destination)
+    const startPos = this.getServerPosition()
+    if (positionEquals(destinationPos, startPos)) return true
+
+    this.m_autoWalkDestination = destinationPos
+    g_map.findPathAsync(startPos, destinationPos, (result) => {
+      if (!result) return
+      if (!positionEquals(this.m_autoWalkDestination, result.destination)) return
+
+      if (result.status !== PathFindResultEnum.PathFindResultOk) {
+        if (this.m_autoWalkRetries > 0 && this.m_autoWalkRetries <= 3) {
+          if (this.m_autoWalkContinueEvent) clearTimeout(this.m_autoWalkContinueEvent)
+          const retryDestination = result.destination.clone()
+          const retryDelay = 200 + this.m_autoWalkRetries * 100
+          this.m_autoWalkContinueEvent = setTimeout(() => {
+            this.m_autoWalkContinueEvent = null
+            this.autoWalk(retryDestination, true)
+          }, retryDelay)
+          return
+        }
+
+        this.m_autoWalkDestination = null
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('onAutoWalkFail', { detail: result.status }))
+          window.dispatchEvent(new CustomEvent('ot:autoWalkFail', { detail: result.status }))
+        }
+        return
+      }
+
+      const path = result.path.slice(0, 127)
+      if (path.length === 0) {
+        this.m_autoWalkDestination = null
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('onAutoWalkFail', { detail: result.status }))
+          window.dispatchEvent(new CustomEvent('ot:autoWalkFail', { detail: result.status }))
+        }
+        return
+      }
+
+      if (!positionEquals(this.m_autoWalkDestination, result.destination)) {
+        this.m_lastAutoWalkPosition = result.destination.clone()
+      }
+
+      g_game.autoWalk(path, result.start)
+    })
+
+    if (!retry) this.lockWalk()
     return true
   }
 
@@ -336,52 +458,274 @@ export class LocalPlayer extends Player {
     }
   }
 
-  setStates(states: number) { this.m_states = states }
+  setStates(states: number) {
+    if (this.m_states === states) return
+    const oldStates = this.m_states
+    this.m_states = states
+    this.emit('onStatesChange', states, oldStates)
+  }
 
   setSkill(skill: number, level: number, levelPercent: number) {
+    const oldLevel = this.m_skillsLevel[skill] ?? 0
+    const oldLevelPercent = this.m_skillsLevelPercent[skill] ?? 0
+    if (oldLevel === level && oldLevelPercent === levelPercent) return
     this.m_skillsLevel[skill] = level
     this.m_skillsLevelPercent[skill] = levelPercent
+    this.emit('onSkillChange', skill, level, levelPercent, oldLevel, oldLevelPercent)
   }
 
   setBaseSkill(skill: number, baseLevel: number) {
+    const oldBaseLevel = this.m_skillsBaseLevel[skill] ?? 0
+    if (oldBaseLevel === baseLevel) return
     this.m_skillsBaseLevel[skill] = baseLevel
+    this.emit('onBaseSkillChange', skill, baseLevel, oldBaseLevel)
   }
 
   setHealth(health: number, maxHealth: number) {
+    if (this.m_health === health && this.m_maxHealth === maxHealth) return
+    const oldHealth = this.m_health
+    const oldMaxHealth = this.m_maxHealth
     this.m_health = health
     this.m_maxHealth = maxHealth
+    this.emit('onHealthChange', health, maxHealth, oldHealth, oldMaxHealth)
     if (this.isDead()) {
       if (this.isPreWalking()) this.stopWalk()
       this.lockWalk()
     }
   }
 
-  setFreeCapacity(freeCapacity: number) { this.m_freeCapacity = freeCapacity }
-  setTotalCapacity(totalCapacity: number) { this.m_totalCapacity = totalCapacity }
-  setExperience(experience: number) { this.m_experience = experience }
+  setFreeCapacity(freeCapacity: number) {
+    if (this.m_freeCapacity === freeCapacity) return
+    const oldFreeCapacity = this.m_freeCapacity
+    this.m_freeCapacity = freeCapacity
+    this.emit('onFreeCapacityChange', freeCapacity, oldFreeCapacity)
+  }
+
+  setTotalCapacity(totalCapacity: number) {
+    if (this.m_totalCapacity === totalCapacity) return
+    const oldTotalCapacity = this.m_totalCapacity
+    this.m_totalCapacity = totalCapacity
+    this.emit('onTotalCapacityChange', totalCapacity, oldTotalCapacity)
+  }
+
+  setExperience(experience: number) {
+    if (this.m_experience === experience) return
+    const oldExperience = this.m_experience
+    this.m_experience = experience
+    this.emit('onExperienceChange', experience, oldExperience)
+  }
+
   setLevel(level: number, levelPercent: number) {
+    if (this.m_level === level && this.m_levelPercent === levelPercent) return
+    const oldLevel = this.m_level
+    const oldLevelPercent = this.m_levelPercent
     this.m_level = level
     this.m_levelPercent = levelPercent
+    this.emit('onLevelChange', level, levelPercent, oldLevel, oldLevelPercent)
   }
+
   setMana(mana: number, maxMana: number) {
+    if (this.m_mana === mana && this.m_maxMana === maxMana) return
+    const oldMana = this.m_mana
+    const oldMaxMana = this.m_maxMana
     this.m_mana = mana
     this.m_maxMana = maxMana
+    this.emit('onManaChange', mana, maxMana, oldMana, oldMaxMana)
   }
+
+  setManaShield(manaShield: number, maxManaShield: number) {
+    if (this.m_manaShield === manaShield && this.m_maxManaShield === maxManaShield) return
+    const oldManaShield = this.m_manaShield
+    const oldMaxManaShield = this.m_maxManaShield
+    this.m_manaShield = manaShield
+    this.m_maxManaShield = maxManaShield
+    this.emit('onManaShieldChange', manaShield, maxManaShield, oldManaShield, oldMaxManaShield)
+  }
+
   setMagicLevel(magicLevel: number, magicLevelPercent: number) {
+    if (this.m_magicLevel === magicLevel && this.m_magicLevelPercent === magicLevelPercent) return
+    const oldMagicLevel = this.m_magicLevel
+    const oldMagicLevelPercent = this.m_magicLevelPercent
     this.m_magicLevel = magicLevel
     this.m_magicLevelPercent = magicLevelPercent
+    this.emit('onMagicLevelChange', magicLevel, magicLevelPercent, oldMagicLevel, oldMagicLevelPercent)
   }
-  setBaseMagicLevel(baseMagicLevel: number) { this.m_baseMagicLevel = baseMagicLevel }
-  setSoul(soul: number) { this.m_soul = soul }
-  setStamina(stamina: number) { this.m_stamina = stamina }
-  setRegenerationTime(regenerationTime: number) { this.m_regenerationTime = regenerationTime }
-  setOfflineTrainingTime(offlineTrainingTime: number) { this.m_offlineTrainingTime = offlineTrainingTime }
-  setSpells(spells: number[]) { this.m_spells = spells || [] }
-  setBlessings(blessings: number) { this.m_blessings = blessings }
+
+  setBaseMagicLevel(baseMagicLevel: number) {
+    if (this.m_baseMagicLevel === baseMagicLevel) return
+    const oldBaseMagicLevel = this.m_baseMagicLevel
+    this.m_baseMagicLevel = baseMagicLevel
+    this.emit('onBaseMagicLevelChange', baseMagicLevel, oldBaseMagicLevel)
+  }
+
+  setSoul(soul: number) {
+    if (this.m_soul === soul) return
+    const oldSoul = this.m_soul
+    this.m_soul = soul
+    this.emit('onSoulChange', soul, oldSoul)
+  }
+
+  setStamina(stamina: number) {
+    if (this.m_stamina === stamina) return
+    const oldStamina = this.m_stamina
+    this.m_stamina = stamina
+    this.emit('onStaminaChange', stamina, oldStamina)
+  }
+
+  setRegenerationTime(regenerationTime: number) {
+    if (this.m_regenerationTime === regenerationTime) return
+    const oldRegenerationTime = this.m_regenerationTime
+    this.m_regenerationTime = regenerationTime
+    this.emit('onRegenerationChange', regenerationTime, oldRegenerationTime)
+  }
+
+  setOfflineTrainingTime(offlineTrainingTime: number) {
+    if (this.m_offlineTrainingTime === offlineTrainingTime) return
+    const oldOfflineTrainingTime = this.m_offlineTrainingTime
+    this.m_offlineTrainingTime = offlineTrainingTime
+    this.emit('onOfflineTrainingChange', offlineTrainingTime, oldOfflineTrainingTime)
+  }
+
+  setSpells(spells: number[]) {
+    const next = spells || []
+    const same =
+      this.m_spells.length === next.length &&
+      this.m_spells.every((value, index) => value === next[index])
+    if (same) return
+    const oldSpells = [...this.m_spells]
+    this.m_spells = [...next]
+    this.emit('onSpellsChange', this.m_spells, oldSpells)
+  }
+
+  setBlessings(blessings: number) {
+    if (this.m_blessings === blessings) return
+    const oldBlessings = this.m_blessings
+    this.m_blessings = blessings
+    this.emit('onBlessingsChange', blessings, oldBlessings)
+  }
+
   setKnown(known: boolean) { this.m_known = known }
+
   setPendingGame(pending: boolean) { this.m_pending = pending }
-  setInventoryItem(slot: number, item: Item | null) { this.m_inventoryItems[slot] = item }
-  setPremium(premium: boolean) { this.m_premium = premium }
+
+  setInventoryItem(slot: number, item: Item | null) {
+    const oldItem = this.m_inventoryItems[slot] ?? null
+    if (oldItem === item) return
+    if (item?.setPosition) {
+      item.setPosition(new Position(0xffff, slot, 0), 0)
+    }
+    this.m_inventoryItems[slot] = item
+    this.emit('onInventoryChange', slot, item, oldItem)
+  }
+
+  setPremium(premium: boolean) {
+    if (this.m_premium === premium) return
+    this.m_premium = premium
+    this.emit('onPremiumChange', premium)
+  }
+
+  setFlatDamageHealing(flatBonus: number) {
+    if (this.m_flatDamageHealing === flatBonus) return
+    this.m_flatDamageHealing = flatBonus
+    this.emit('onFlatDamageHealingChange', flatBonus)
+  }
+
+  setAttackInfo(attackValue: number, attackElement: number) {
+    if (this.m_attackValue === attackValue && this.m_attackElement === attackElement) return
+    this.m_attackValue = attackValue
+    this.m_attackElement = attackElement
+    this.emit('onAttackInfoChange', attackValue, attackElement)
+  }
+
+  setConvertedDamage(convertedDamage: number, convertedElement: number) {
+    if (this.m_convertedDamage === convertedDamage && this.m_convertedElement === convertedElement) return
+    this.m_convertedDamage = convertedDamage
+    this.m_convertedElement = convertedElement
+    this.emit('onConvertedDamageChange', convertedDamage, convertedElement)
+  }
+
+  setImbuements(lifeLeech: number, manaLeech: number, critChance: number, critDamage: number, onslaught: number) {
+    if (
+      this.m_lifeLeech === lifeLeech &&
+      this.m_manaLeech === manaLeech &&
+      this.m_critChance === critChance &&
+      this.m_critDamage === critDamage &&
+      this.m_onslaught === onslaught
+    ) return
+    this.m_lifeLeech = lifeLeech
+    this.m_manaLeech = manaLeech
+    this.m_critChance = critChance
+    this.m_critDamage = critDamage
+    this.m_onslaught = onslaught
+    this.emit('onImbuementsChange', lifeLeech, manaLeech, critChance, critDamage, onslaught)
+  }
+
+  setDefenseInfo(defense: number, armor: number, mitigation: number, dodge: number, damageReflection: number) {
+    if (
+      this.m_defense === defense &&
+      this.m_armor === armor &&
+      this.m_mitigation === mitigation &&
+      this.m_dodge === dodge &&
+      this.m_damageReflection === damageReflection
+    ) return
+    this.m_defense = defense
+    this.m_armor = armor
+    this.m_mitigation = mitigation
+    this.m_dodge = dodge
+    this.m_damageReflection = damageReflection
+    this.emit('onDefenseInfoChange', defense, armor, mitigation, dodge, damageReflection)
+  }
+
+  setCombatAbsorbValues(absorbValues: Record<number, number>) {
+    const normalized = absorbValues || {}
+    const oldKeys = Object.keys(this.m_combatAbsorbValues)
+    const newKeys = Object.keys(normalized)
+    const same =
+      oldKeys.length === newKeys.length &&
+      newKeys.every((key) => this.m_combatAbsorbValues[Number(key)] === normalized[Number(key)])
+    if (same) return
+    this.m_combatAbsorbValues = { ...normalized }
+    this.emit('onCombatAbsorbValuesChange', { ...this.m_combatAbsorbValues })
+  }
+
+  setForgeBonuses(momentum: number, transcendence: number, amplification: number) {
+    if (
+      this.m_momentum === momentum &&
+      this.m_transcendence === transcendence &&
+      this.m_amplification === amplification
+    ) return
+    this.m_momentum = momentum
+    this.m_transcendence = transcendence
+    this.m_amplification = amplification
+    this.emit('onForgeBonusesChange', momentum, transcendence, amplification)
+  }
+
+  setExperienceRate(type: number, value: number) {
+    if (this.m_experienceRates[type] === value) return
+    this.m_experienceRates[type] = value
+    this.emit('onExperienceRateChange', type, value)
+  }
+
+  setStoreExpBoostTime(value: number) {
+    if (this.m_storeExpBoostTime === value) return
+    const oldValue = this.m_storeExpBoostTime
+    this.m_storeExpBoostTime = value
+    this.emit('onStoreExpBoostTimeChange', value, oldValue)
+  }
+
+  setHarmony(harmony: number) {
+    if (this.m_harmony === harmony) return
+    const oldHarmony = this.m_harmony
+    this.m_harmony = harmony
+    this.emit('onHarmonyChange', harmony, oldHarmony)
+  }
+
+  setSerene(serene: boolean) {
+    if (this.m_serene === serene) return
+    const oldSerene = this.m_serene
+    this.m_serene = serene
+    this.emit('onSereneChange', serene, oldSerene)
+  }
 
   getStates() { return this.m_states }
   getSkillLevel(skill: number) { return this.m_skillsLevel[skill] ?? -1 }
@@ -396,6 +740,8 @@ export class LocalPlayer extends Player {
   getLevelPercent() { return this.m_levelPercent }
   getMana() { return this.m_mana }
   getMaxMana() { return this.m_maxMana }
+  getManaShield() { return this.m_manaShield }
+  getMaxManaShield() { return this.m_maxManaShield }
   getMagicLevel() { return this.m_magicLevel }
   getMagicLevelPercent() { return this.m_magicLevelPercent }
   getBaseMagicLevel() { return this.m_baseMagicLevel }
@@ -403,6 +749,39 @@ export class LocalPlayer extends Player {
   getStamina() { return this.m_stamina }
   getRegenerationTime() { return this.m_regenerationTime }
   getOfflineTrainingTime() { return this.m_offlineTrainingTime }
+  getStoreExpBoostTime() { return this.m_storeExpBoostTime }
+  getExperienceRate(type: number) { return this.m_experienceRates[type] ?? 0 }
+  getExperienceRates() { return { ...this.m_experienceRates } }
+  getFlatDamageHealing() { return this.m_flatDamageHealing }
+  getAttackInfo() { return { attackValue: this.m_attackValue, attackElement: this.m_attackElement } }
+  getConvertedDamage() { return { convertedDamage: this.m_convertedDamage, convertedElement: this.m_convertedElement } }
+  getImbuements() {
+    return {
+      lifeLeech: this.m_lifeLeech,
+      manaLeech: this.m_manaLeech,
+      critChance: this.m_critChance,
+      critDamage: this.m_critDamage,
+      onslaught: this.m_onslaught,
+    }
+  }
+  getDefenseInfo() {
+    return {
+      defense: this.m_defense,
+      armor: this.m_armor,
+      mitigation: this.m_mitigation,
+      dodge: this.m_dodge,
+      damageReflection: this.m_damageReflection,
+    }
+  }
+  getCombatAbsorbValues() { return { ...this.m_combatAbsorbValues } }
+  getForgeBonuses() {
+    return {
+      momentum: this.m_momentum,
+      transcendence: this.m_transcendence,
+      amplification: this.m_amplification,
+    }
+  }
+  getHarmony() { return this.m_harmony }
   getSpells() { return this.m_spells }
   getInventoryItem(slot: number) { return this.m_inventoryItems[slot] ?? null }
   getBlessings() { return this.m_blessings }
@@ -421,6 +800,7 @@ export class LocalPlayer extends Player {
   isServerWalking() { return this.m_serverWalk }
   isPremium() { return this.m_premium }
   isPendingGame() { return this.m_pending }
+  isSerene() { return this.m_serene }
 
   /**
    * Session reset (OTC-style behavior where a new LocalPlayer is created on login).

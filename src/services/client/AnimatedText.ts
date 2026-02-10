@@ -22,7 +22,7 @@ function colorFrom8bit(c: number): { r: number; g: number; b: number; a?: number
 }
 
 /** OTC: CachedText – text, font, align, getTextSize. Stub: we use canvas measureText. */
-function getTextSize(text: string, font: string = '14px sans-serif'): { width: number; height: number } {
+function getTextSize(text: string, font: string = 'bold 14px sans-serif'): { width: number; height: number } {
   if (typeof document === 'undefined' || !text) return { width: 0, height: 10 }
   const ctx = document.createElement('canvas').getContext('2d')
   if (!ctx) return { width: text.length * 6, height: 10 }
@@ -45,7 +45,7 @@ export class AnimatedText {
   private m_animationStart = Date.now()
   /** OTC: CachedText – stub: plain text + getTextSize */
   private m_text = ''
-  private m_font = '14spx sans-serif'
+  private m_font = 'bold 14px sans-serif'
   private m_align: 'left' | 'center' | 'right' = 'left'
   /** OTC: Point m_offset */
   private m_offset: Point = { x: 0, y: 0 }

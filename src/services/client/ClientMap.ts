@@ -13,7 +13,7 @@ import { g_dispatcher } from '../framework/EventDispatcher'
 import { g_player } from './LocalPlayer'
 import { Thing, MapView } from './types'
 import type { Light } from './types'
-import { Position, PositionLike, ensurePosition } from './Position'
+import { Direction, DirectionType, Position, PositionLike, ensurePosition } from './Position'
 import { Item } from './Item'
 import { Missile } from './Missile'
 import { AnimatedText } from './AnimatedText'
@@ -37,6 +37,29 @@ export interface SnapshotFloor {
   w: number
   h: number
   tiles: SnapshotTile[][]
+}
+
+export enum PathFindResultEnum {
+  PathFindResultOk = 0,
+  PathFindResultSamePosition = 1,
+  PathFindResultImpossible = 2,
+  PathFindResultTooFar = 3,
+  PathFindResultNoWay = 4,
+}
+
+export enum PathFindFlagsEnum {
+  PathFindAllowNotSeenTiles = 1,
+  PathFindAllowCreatures = 2,
+  PathFindAllowNonPathable = 4,
+  PathFindAllowNonWalkable = 8,
+  PathFindIgnoreCreatures = 16,
+}
+
+export interface PathFindResultData {
+  start: Position
+  destination: Position
+  path: DirectionType[]
+  status: PathFindResultEnum
 }
 
 export class ClientMap {
@@ -176,6 +199,183 @@ export class ClientMap {
   /** OTC Map::isLookPossible(pos) – tiles we can look through (e.g. windows, doors). Stub: true. */
   isLookPossible(_pos: PositionLike): boolean {
     return true
+  }
+
+  /**
+   * OTC: Map::findPath(start, goal, maxComplexity, flags)
+   * Dijkstra/A* hybrid used by local player auto-walk.
+   */
+  findPath(
+    startPos: PositionLike,
+    goalPos: PositionLike,
+    maxComplexity = 1024,
+    flags = 0
+  ): PathFindResultData {
+    const start = ensurePosition(startPos).clone()
+    const goal = ensurePosition(goalPos).clone()
+    const ret: PathFindResultData = {
+      start,
+      destination: goal,
+      path: [],
+      status: PathFindResultEnum.PathFindResultNoWay,
+    }
+
+    if (start.equals(goal)) {
+      ret.status = PathFindResultEnum.PathFindResultSamePosition
+      return ret
+    }
+
+    if (start.z !== goal.z) {
+      ret.status = PathFindResultEnum.PathFindResultImpossible
+      return ret
+    }
+
+    const ignoreCreatures = (flags & PathFindFlagsEnum.PathFindIgnoreCreatures) !== 0
+    if (this.isAwareOfPosition(goal)) {
+      const goalTile = this.getTile(goal)
+      if (!goalTile || !goalTile.isWalkable(ignoreCreatures)) {
+        return ret
+      }
+    } else if ((flags & PathFindFlagsEnum.PathFindAllowNotSeenTiles) === 0) {
+      return ret
+    }
+
+    type SearchNode = {
+      cost: number
+      totalCost: number
+      pos: Position
+      prev: SearchNode | null
+      dir: DirectionType
+    }
+
+    const nodes = new Map<string, SearchNode>()
+    const searchList: Array<{ node: SearchNode, priority: number }> = []
+
+    let currentNode: SearchNode | null = {
+      cost: 0,
+      totalCost: 0,
+      pos: start,
+      prev: null,
+      dir: Direction.InvalidDirection,
+    }
+    nodes.set(start.toKey(), currentNode)
+    let foundNode: SearchNode | null = null
+
+    while (currentNode) {
+      if (nodes.size > maxComplexity) {
+        ret.status = PathFindResultEnum.PathFindResultTooFar
+        break
+      }
+
+      if (currentNode.pos.equals(goal) && (!foundNode || currentNode.cost < foundNode.cost)) {
+        foundNode = currentNode
+      }
+
+      if (foundNode && currentNode.totalCost >= foundNode.cost) {
+        break
+      }
+
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          if (dx === 0 && dy === 0) continue
+
+          let wasSeen = false
+          let hasCreature = false
+          let isNotWalkable = true
+          let isNotPathable = true
+          let speed = 100
+
+          const neighborPos = currentNode.pos.translated(dx, dy)
+          if (neighborPos.x < 0 || neighborPos.y < 0) continue
+
+          if (this.isAwareOfPosition(neighborPos)) {
+            wasSeen = true
+            const tile = this.getTile(neighborPos)
+            if (tile) {
+              hasCreature = tile.hasCreatures() && !ignoreCreatures
+              isNotWalkable = !tile.isWalkable(ignoreCreatures)
+              isNotPathable = !tile.isPathable()
+              speed = tile.getGroundSpeed()
+            }
+          }
+
+          const isGoal = neighborPos.equals(goal)
+          if (!isGoal) {
+            if ((flags & PathFindFlagsEnum.PathFindAllowNotSeenTiles) === 0 && !wasSeen) continue
+            if (wasSeen) {
+              if ((flags & PathFindFlagsEnum.PathFindAllowCreatures) === 0 && hasCreature) continue
+              if ((flags & PathFindFlagsEnum.PathFindAllowNonPathable) === 0 && isNotPathable) continue
+              if ((flags & PathFindFlagsEnum.PathFindAllowNonWalkable) === 0 && isNotWalkable) continue
+            }
+          } else {
+            if ((flags & PathFindFlagsEnum.PathFindAllowNotSeenTiles) === 0 && !wasSeen) continue
+            if (wasSeen && (flags & PathFindFlagsEnum.PathFindAllowNonWalkable) === 0 && isNotWalkable) continue
+          }
+
+          const walkDir = currentNode.pos.getDirectionFromPosition(neighborPos)
+          if (walkDir === Direction.InvalidDirection) continue
+
+          const walkFactor = walkDir >= Direction.NorthEast ? 3 : 1
+          const cost = currentNode.cost + (speed * walkFactor) / 100
+
+          const key = neighborPos.toKey()
+          let neighborNode = nodes.get(key)
+          if (!neighborNode) {
+            neighborNode = {
+              cost: Number.POSITIVE_INFINITY,
+              totalCost: Number.POSITIVE_INFINITY,
+              pos: neighborPos,
+              prev: null,
+              dir: Direction.InvalidDirection,
+            }
+            nodes.set(key, neighborNode)
+          } else if (neighborNode.cost <= cost) {
+            continue
+          }
+
+          neighborNode.prev = currentNode
+          neighborNode.cost = cost
+          neighborNode.totalCost = cost + neighborPos.distance(goal)
+          neighborNode.dir = walkDir
+          searchList.push({ node: neighborNode, priority: neighborNode.totalCost })
+        }
+      }
+
+      if (searchList.length > 0) {
+        searchList.sort((a, b) => a.priority - b.priority)
+        currentNode = searchList.shift()?.node ?? null
+      } else {
+        currentNode = null
+      }
+    }
+
+    if (foundNode) {
+      let node: SearchNode | null = foundNode
+      while (node) {
+        ret.path.push(node.dir)
+        node = node.prev
+      }
+      if (ret.path.length > 0) ret.path.pop()
+      ret.path.reverse()
+      ret.status = PathFindResultEnum.PathFindResultOk
+    }
+
+    return ret
+  }
+
+  /** OTC: Map::findPathAsync(start, goal, callback) */
+  findPathAsync(
+    startPos: PositionLike,
+    goalPos: PositionLike,
+    callback: (result: PathFindResultData) => void,
+    maxComplexity = 1024,
+    flags = 0
+  ): void {
+    const start = ensurePosition(startPos).clone()
+    const goal = ensurePosition(goalPos).clone()
+    setTimeout(() => {
+      callback(this.findPath(start, goal, maxComplexity, flags))
+    }, 0)
   }
 
   getTile(pos: PositionLike): Tile | null {

@@ -275,13 +275,14 @@ const OtcImage = forwardRef(function OtcImage(
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: 12,
+            fontWeight: 'bold',
             color: '#888',
           }}
         >
           Imagem não carregada
         </div>
       )}
-      <div style={{ position: 'relative', zIndex: 1 }}>{children}</div>
+      <div style={{ position: 'relative', zIndex: 1, width: '100%', height: '100%' }}>{children}</div>
     </div>
   )
 })

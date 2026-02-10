@@ -333,6 +333,71 @@ export class MapView {
     }
   }
 
+  /** OTC: MapView::getPosition(mousePos). */
+  getPosition(mousePos: Point, mapSize?: { width: number, height: number }): Position {
+    const size = mapSize ?? {
+      width: this.m_posInfo.rect.width ?? 0,
+      height: this.m_posInfo.rect.height ?? 0,
+    }
+    if (size.width <= 0 || size.height <= 0) return new Position()
+
+    if (!mapSize) {
+      const x = Number(mousePos?.x ?? -1)
+      const y = Number(mousePos?.y ?? -1)
+      if (x < 0 || y < 0 || x > size.width || y > size.height) return new Position()
+    }
+
+    const cameraPosition = this.getCameraPosition()
+    if (!cameraPosition.isValid()) return new Position()
+
+    const srcRect = this.calcFramebufferSource(size)
+    const sh = (srcRect.width ?? 1) / Math.max(1, size.width)
+    const sv = (srcRect.height ?? 1) / Math.max(1, size.height)
+
+    const framebufferPosX = (mousePos.x ?? 0) * sh
+    const framebufferPosY = (mousePos.y ?? 0) * sv
+    const centerOffsetX = (framebufferPosX + (srcRect.x ?? 0)) / TILE_PIXELS
+    const centerOffsetY = (framebufferPosY + (srcRect.y ?? 0)) / TILE_PIXELS
+
+    const tilePos2DX = this.m_virtualCenterOffset.x - this.m_drawDimension.width + centerOffsetX + 2
+    const tilePos2DY = this.m_virtualCenterOffset.y - this.m_drawDimension.height + centerOffsetY + 2
+    if (tilePos2DX + cameraPosition.x < 0 && tilePos2DY + cameraPosition.y < 0) return new Position()
+
+    const position = new Position(
+      Math.floor(tilePos2DX + cameraPosition.x),
+      Math.floor(tilePos2DY + cameraPosition.y),
+      cameraPosition.z
+    )
+    return position.isValid() ? position : new Position()
+  }
+
+  /** OTC: MapView::getTopTile(tilePos). */
+  getTopTile(tilePos: Position): Tile | null {
+    if (!tilePos?.isValid?.()) return null
+
+    const camera =
+      this.m_lastCameraPosition?.isValid?.()
+        ? this.m_lastCameraPosition
+        : this.m_posInfo.camera?.isValid?.()
+          ? this.m_posInfo.camera
+          : this.getCameraPosition()
+    if (!camera?.isValid?.()) return g_map.getTile(tilePos)
+
+    const topFloor = Math.max(0, Math.min(g_gameConfig.getMapMaxZ(), this.m_cachedFirstVisibleFloor))
+    const bottomFloor = Math.max(topFloor, this.m_floorMax)
+    const cursorPos = tilePos.clone()
+
+    if (cursorPos.z >= topFloor) cursorPos.coveredUp(cursorPos.z - topFloor)
+
+    for (let floor = topFloor; floor <= bottomFloor; floor++) {
+      const tile = g_map.getTile(cursorPos)
+      if (tile && (cursorPos.z === camera.z || tile.isClickable?.())) return tile
+      if (!cursorPos.coveredDown()) break
+    }
+
+    return null
+  }
+
   /**
    * OTC: MapView::calcFramebufferSource(const Size& destSize)
    * drawOffset = ((m_drawDimension - m_visibleDimension - Size(1)) / 2) * m_tileSize;
@@ -493,6 +558,13 @@ export class MapView {
         : Direction.InvalidDirection
       this.updateViewport(direction)
     }
+  }
+
+  /** OTC: MapView::onMouseMove(mousePos). */
+  onMouseMove(mousePos: Position, _isVirtualMove = false) {
+    this.m_mousePosition = mousePos?.clone?.() ?? null
+    const tile = this.getTopTile(mousePos)
+    this.m_lastHighlightTile = tile ?? null
   }
 
   /** OTC mapview.cpp L544-555: onTileUpdate – if thing&&isOpaque&&op==REMOVE m_resetCoveredCache; if op==CLEAN requestUpdateVisibleTiles. */

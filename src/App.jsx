@@ -7,6 +7,7 @@ import GameInterface from "./modules/game_interface";
 import { login } from "./services/protocol/loginProtocol";
 import { g_game } from './services/client/Game';
 import { g_drawPool } from "./services/graphics/DrawPoolManager";
+import { initStartup } from "./modules/startup";
 
 /**
  * OTClient Web UI - Fluxo de início
@@ -64,6 +65,10 @@ function AppContent() {
 }
 
 function App() {
+  useEffect(() => {
+    initStartup()
+  }, [])
+
   return (
     <GameTextMessageProvider>
       <AppContent />

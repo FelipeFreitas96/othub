@@ -3,10 +3,12 @@ import { ProtocolGame } from './ProtocolGame'
 import { loadThings } from '../protocol/things'
 import { g_map } from './ClientMap'
 import { getProtocolInfo } from '../protocol/protocolInfo'
+import { isFeatureEnabled } from '../protocol/features'
 import { GameEventsEnum, MessageModeEnum } from './Const'
 import { g_player, LocalPlayer } from './LocalPlayer'
 import { Direction, DirectionType, Position } from './Position'
 import { StaticText } from './StaticText'
+import { Creature } from './Creature'
 
 let clientVersion = 860
 let serverBeat = 0
@@ -14,6 +16,24 @@ let canReportBugs = false
 let expertPvpMode = false
 let ping = -1
 let walkMaxSteps = 1
+
+export const FightModes = {
+  FightOffensive: 1,
+  FightBalanced: 2,
+  FightDefensive: 3,
+} as const
+
+export const ChaseModes = {
+  DontChase: 0,
+  ChaseOpponent: 1,
+} as const
+
+export const PVPModes = {
+  WhiteDove: 0,
+  WhiteHand: 1,
+  YellowHand: 2,
+  RedFist: 3,
+} as const
 
 export interface CharacterInfo {
   worldHost?: string
@@ -24,17 +44,38 @@ export interface CharacterInfo {
   worldName?: string
 }
 
+type GameThing = {
+  isCreature?: () => boolean
+  getId?: () => number | string
+  getPosition?: () => Position
+  getStackPos?: () => number
+}
+
 export class Game {
   m_protocolGame: ProtocolGame | null
   m_characterName: string
   m_worldName: string
   m_clientVersion: number
+  m_attackingCreature: Creature | null
+  m_followingCreature: Creature | null
+  m_seq: number
+  m_fightMode: number
+  m_chaseMode: number
+  m_safeFight: boolean
+  m_pvpMode: number
 
   constructor() {
     this.m_protocolGame = null
     this.m_characterName = ''
     this.m_worldName = ''
     this.m_clientVersion = 860
+    this.m_attackingCreature = null
+    this.m_followingCreature = null
+    this.m_seq = 0
+    this.m_fightMode = FightModes.FightBalanced
+    this.m_chaseMode = ChaseModes.DontChase
+    this.m_safeFight = true
+    this.m_pvpMode = PVPModes.WhiteDove
   }
 
   private emit(event: string, detail?: any) {
@@ -100,6 +141,9 @@ export class Game {
 
   processGameEnd() {
     this.m_protocolGame = null
+    this.m_attackingCreature = null
+    this.m_followingCreature = null
+    this.m_seq = 0
     g_map.cleanDynamicThings()
     g_player.resetForLogin()
     if (typeof window !== 'undefined') {
@@ -267,6 +311,22 @@ export class Game {
     return serverBeat
   }
 
+  getFightMode() {
+    return this.m_fightMode
+  }
+
+  getChaseMode() {
+    return this.m_chaseMode
+  }
+
+  isSafeFight() {
+    return this.m_safeFight
+  }
+
+  getPVPMode() {
+    return this.m_pvpMode
+  }
+
   getPing() {
     return ping
   }
@@ -281,6 +341,59 @@ export class Game {
 
   setWalkMaxSteps(value: number) {
     walkMaxSteps = Math.max(0, Math.floor(value))
+  }
+
+  setChaseMode(chaseMode: number) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (this.m_chaseMode === chaseMode) return
+    this.m_chaseMode = chaseMode
+    this.m_protocolGame.sendChangeFightModes(
+      this.m_fightMode,
+      this.m_chaseMode,
+      this.m_safeFight,
+      this.m_pvpMode
+    )
+    this.emit('onChaseModeChange', chaseMode)
+  }
+
+  setFightMode(fightMode: number) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (this.m_fightMode === fightMode) return
+    this.m_fightMode = fightMode
+    this.m_protocolGame.sendChangeFightModes(
+      this.m_fightMode,
+      this.m_chaseMode,
+      this.m_safeFight,
+      this.m_pvpMode
+    )
+    this.emit('onFightModeChange', fightMode)
+  }
+
+  setSafeFight(on: boolean) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (this.m_safeFight === on) return
+    this.m_safeFight = on
+    this.m_protocolGame.sendChangeFightModes(
+      this.m_fightMode,
+      this.m_chaseMode,
+      this.m_safeFight,
+      this.m_pvpMode
+    )
+    this.emit('onSafeFightChange', on)
+  }
+
+  setPVPMode(pvpMode: number) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (!isFeatureEnabled('GamePVPMode')) return
+    if (this.m_pvpMode === pvpMode) return
+    this.m_pvpMode = pvpMode
+    this.m_protocolGame.sendChangeFightModes(
+      this.m_fightMode,
+      this.m_chaseMode,
+      this.m_safeFight,
+      this.m_pvpMode
+    )
+    this.emit('onPVPModeChange', pvpMode)
   }
 
   // OTC: Game::canPerformGameAction – game.cpp
@@ -300,6 +413,30 @@ export class Game {
   }
 
   // OTC: Game::forceWalk – game.cpp
+  // OTC: Game::autoWalk - game.cpp
+  autoWalk(dirs: DirectionType[], startPos: Position): void {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (!Array.isArray(dirs) || dirs.length === 0) return
+    if (dirs.length > 127) return
+
+    if (this.isFollowing()) this.cancelFollow()
+
+    const direction = dirs[0]
+    const nextTile = startPos?.isValid?.() ? g_map.getTile(startPos.translatedToDirection(direction)) : null
+    if (
+      nextTile &&
+      g_player.isPreWalking?.() &&
+      startPos.equals?.(g_player.getPosition?.()) &&
+      nextTile.isWalkable?.() &&
+      !g_player.isWalking?.() &&
+      g_player.canWalk?.(true)
+    ) {
+      g_player.preWalk?.(direction)
+    }
+
+    this.m_protocolGame.sendAutoWalk(dirs)
+  }
+
   forceWalk(direction: DirectionType) {
     if (!this.canPerformGameAction() || !this.m_protocolGame) return
 
@@ -354,7 +491,130 @@ export class Game {
   // OTC: Game::stop – game.cpp
   stop() {
     if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    if (this.isFollowing()) this.cancelFollow()
     this.m_protocolGame.sendStop()
+  }
+
+  look(thing: GameThing | null, isBattleList = false) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame || !thing) return
+    const isCreature = thing.isCreature?.() ?? false
+    const id = Number(thing.getId?.() ?? 0) >>> 0
+    if (!id) return
+
+    if (isCreature && isBattleList && this.m_clientVersion >= 961) {
+      this.m_protocolGame.sendLookCreature(id)
+      return
+    }
+
+    const pos = thing.getPosition?.()
+    if (!pos) return
+    const thingId = isCreature ? 99 : (id & 0xffff)
+    const stackPos = thing.getStackPos?.() ?? 0
+    this.m_protocolGame.sendLook(pos, thingId, stackPos)
+  }
+
+  move(thing: GameThing | null, toPos: Position, count = 1) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame || !thing || !toPos?.isValid?.()) return
+    const fromPos = thing.getPosition?.()
+    if (!fromPos || !fromPos.isValid?.()) return
+    if (fromPos.equals?.(toPos)) return
+
+    const isCreature = thing.isCreature?.() ?? false
+    const thingId = isCreature ? 99 : (Number(thing.getId?.() ?? 0) & 0xffff)
+    if (!thingId) return
+    const stackPos = thing.getStackPos?.() ?? 0
+    this.m_protocolGame.sendMove(fromPos, thingId, stackPos, toPos, Math.max(1, count))
+  }
+
+  use(thing: GameThing | null) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame || !thing) return
+    const itemId = Number(thing.getId?.() ?? 0)
+    if (!itemId) return
+
+    let pos = thing.getPosition?.()
+    if (!pos || !pos.isValid?.()) pos = new Position(0xFFFF, 0, 0)
+
+    const stackPos = thing.getStackPos?.() ?? 0
+    this.m_protocolGame.sendUseItem(pos, itemId, stackPos, 0)
+  }
+
+  setAttackingCreature(creature: Creature | null) {
+    this.m_attackingCreature = creature
+    g_player.setAttackTarget?.(creature)
+  }
+
+  getAttackingCreature(): Creature | null {
+    return this.m_attackingCreature
+  }
+
+  isAttacking(): boolean {
+    return this.m_attackingCreature != null
+  }
+
+  setFollowingCreature(creature: Creature | null) {
+    this.m_followingCreature = creature
+  }
+
+  getFollowingCreature(): Creature | null {
+    return this.m_followingCreature
+  }
+
+  isFollowing(): boolean {
+    return this.m_followingCreature != null
+  }
+
+  attack(creature: Creature | null) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame || creature === g_player) return
+
+    if (creature && creature === this.m_attackingCreature) creature = null
+    if (creature && this.isFollowing()) this.cancelFollow()
+
+    this.setAttackingCreature(creature)
+    g_player.stopAutoWalk?.()
+
+    if (this.m_clientVersion >= 963) {
+      if (creature) this.m_seq = Number(creature.getId?.() ?? 0) >>> 0
+    } else {
+      this.m_seq = (this.m_seq + 1) >>> 0
+    }
+
+    this.m_protocolGame.sendAttack(creature ? (Number(creature.getId?.() ?? 0) >>> 0) : 0, this.m_seq)
+  }
+
+  follow(creature: Creature | null) {
+    if (!this.canPerformGameAction() || !this.m_protocolGame || creature === g_player) return
+
+    if (creature && creature === this.m_followingCreature) creature = null
+    if (creature && this.isAttacking()) this.cancelAttack()
+
+    this.setFollowingCreature(creature)
+    g_player.stopAutoWalk?.()
+
+    if (this.m_clientVersion >= 963) {
+      if (creature) this.m_seq = Number(creature.getId?.() ?? 0) >>> 0
+    } else {
+      this.m_seq = (this.m_seq + 1) >>> 0
+    }
+
+    this.m_protocolGame.sendFollow(creature ? (Number(creature.getId?.() ?? 0) >>> 0) : 0, this.m_seq)
+  }
+
+  cancelAttack() {
+    if (!this.isAttacking()) return
+    this.cancelAttackAndFollow()
+  }
+
+  cancelFollow() {
+    if (!this.isFollowing()) return
+    this.cancelAttackAndFollow()
+  }
+
+  cancelAttackAndFollow() {
+    if (!this.canPerformGameAction() || !this.m_protocolGame) return
+    this.setAttackingCreature(null)
+    this.setFollowingCreature(null)
+    g_player.stopAutoWalk?.()
+    this.m_protocolGame.sendCancelAttackAndFollow()
   }
 
   // OTC: Game::talk
