@@ -15,6 +15,7 @@ import {
   type Color,
 } from './declarations'
 import type { CoordsBuffer } from './CoordsBuffer'
+import { TextureAtlas, type AtlasEntry } from './TextureAtlas'
 
 export { CompositionMode, BlendEquation }
 export type { Size, Rect, Color }
@@ -665,6 +666,24 @@ export class Painter {
 
   private m_texCache = new Map<number, THREE.CanvasTexture | null>()
   private m_canvasTexCache = new Map<HTMLCanvasElement, THREE.CanvasTexture>()
+  private m_textureAtlas: TextureAtlas | null = null
+
+  setUseTextureAtlas(enabled: boolean): void {
+    if (enabled && !this.m_textureAtlas) {
+      this.m_textureAtlas = new TextureAtlas()
+    } else if (!enabled && this.m_textureAtlas) {
+      this.m_textureAtlas.dispose()
+      this.m_textureAtlas = null
+    }
+  }
+
+  flushTextureAtlas(): void {
+    this.m_textureAtlas?.flush()
+  }
+
+  getTextureAtlasStats(): string | null {
+    return this.m_textureAtlas?.getStats() ?? null
+  }
 
   texForSprite(spriteId: number, sprites: { getCanvas: (id: number) => HTMLCanvasElement | null } | null): THREE.CanvasTexture | null {
     if (!spriteId || !sprites) return null
@@ -681,8 +700,11 @@ export class Painter {
     return tex
   }
 
-  texForCanvas(canvas: HTMLCanvasElement | null): THREE.CanvasTexture | null {
+  texForCanvas(canvas: HTMLCanvasElement | null, opts?: { skipAtlas?: boolean }): THREE.CanvasTexture | AtlasEntry | null {
     if (!canvas) return null
+    if (this.m_textureAtlas && !opts?.skipAtlas) {
+      return this.m_textureAtlas.getOrAdd(canvas)
+    }
     if (this.m_canvasTexCache.has(canvas)) return this.m_canvasTexCache.get(canvas)!
     const tex = new THREE.CanvasTexture(canvas)
     tex.magFilter = tex.minFilter = THREE.NearestFilter

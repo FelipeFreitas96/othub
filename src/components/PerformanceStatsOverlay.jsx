@@ -6,6 +6,7 @@ import { useEffect, useState, useRef } from 'react'
 import { getClientOptions, subscribeClientOptions } from '../modules/client_options/service/optionsService'
 import { g_map } from '../services/client/ClientMap'
 import { g_drawPool } from '../services/graphics/DrawPoolManager'
+import { g_painter } from '../services/graphics/Painter'
 import { g_game } from '../services/client/Game'
 import { g_graphics } from '../services/graphics/Graphics'
 
@@ -19,7 +20,10 @@ function escapeHtml(s) {
 
 function getStats() {
   const creatures = g_map?.creatures ?? g_map?.m_knownCreatures
-  const creatureCount = creatures?.size ?? 0
+  let creatureCount = 0
+  if (creatures?.values) {
+    for (const c of creatures.values()) if (c?.getTile?.()) creatureCount++
+  }
   const tiles = g_map?.tiles ?? g_map?.m_tiles
   const tileCount = tiles?.size ?? 0
 
@@ -44,6 +48,7 @@ function getStats() {
 
   const viewport = g_graphics?.getViewport?.() ?? {}
   const ping = g_game?.getPing?.() ?? -1
+  const atlasStats = g_painter?.getTextureAtlasStats?.() ?? null
 
   return {
     creatureCount,
@@ -56,6 +61,7 @@ function getStats() {
     viewportWidth: viewport.width ?? 0,
     viewportHeight: viewport.height ?? 0,
     ping,
+    atlasStats,
   }
 }
 
@@ -92,8 +98,9 @@ export default function PerformanceStatsOverlay() {
         const poolEntries = Object.entries(stats.poolBreakdown || {})
         const lines = [
           `FPS: ${fps}`,
-          `Draw objs: ${stats.drawObjectCount}`,
-          `Creatures: ${stats.creatureCount}`,
+          ...(stats.atlasStats ? [`Atlas: ${stats.atlasStats}`] : []),
+          `Draw calls: ${stats.drawObjectCount}`,
+          `Creatures (on map): ${stats.creatureCount}`,
           `Tiles: ${stats.tileCount}`,
           `Missiles: ${stats.missileCount}`,
           `Animated Text: ${stats.animatedTextCount}`,

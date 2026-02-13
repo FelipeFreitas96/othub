@@ -151,7 +151,7 @@ export class LightView {
     const canvas = this.getCanvas()
     if (!canvas) return
 
-    const texture = g_drawPool.texForCanvas(canvas) as { needsUpdate?: boolean } | null
+    const texture = g_drawPool.texForCanvas(canvas, { skipAtlas: true }) as { needsUpdate?: boolean } | null
     if (!texture) return
     texture.needsUpdate = true
 

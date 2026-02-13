@@ -86,6 +86,7 @@ export class DrawPoolManager {
     this.m_size = { ...viewportSize }
     this.m_transformMatrix = g_painter.getTransformMatrixForSize(this.m_size)
     g_painter.setResolution(this.m_size, this.m_transformMatrix)
+    g_painter.flushTextureAtlas()
 
     // Clear screen before drawing all pools (autoClear is OFF; we manage it here).
     g_painter.setRenderTarget(null)
@@ -116,12 +117,19 @@ export class DrawPoolManager {
   addTexturedRect(destOrRect: { x?: number; y?: number; width?: number; height?: number; texture?: unknown; tileX?: number; tileY?: number; pixelX?: number; pixelY?: number; pixelWidth?: number; pixelHeight?: number; color?: unknown } | unknown, texture?: unknown, src?: { x?: number; y?: number; width?: number; height?: number }, color?: unknown): void {
     if (texture !== undefined && arguments.length >= 2) {
       const d = (destOrRect ?? {}) as { x?: number; y?: number; width?: number; height?: number }
-      const s = (src ?? {}) as { x?: number; y?: number; width?: number; height?: number }
+      let s = (src ?? {}) as { x?: number; y?: number; width?: number; height?: number }
+      const atlasEntry = texture as { texture?: unknown; src?: { x?: number; y?: number; width?: number; height?: number } }
+      const actualTex = atlasEntry?.texture != null ? atlasEntry.texture : texture
+      if (atlasEntry?.src) {
+        s = (s.width != null && s.height != null)
+          ? { x: (atlasEntry.src.x ?? 0) + (s.x ?? 0), y: (atlasEntry.src.y ?? 0) + (s.y ?? 0), width: s.width, height: s.height }
+          : { ...atlasEntry.src }
+      }
       if ((d.width ?? 0) <= 0 || (d.height ?? 0) <= 0 || (s.width ?? 0) <= 0 || (s.height ?? 0) <= 0) {
         this.getCurrentPool()?.resetOnlyOnceParameters()
         return
       }
-      this.getCurrentPool()?.add(color as any, texture, { type: 0, dest: d as any, src: s as any }, null)
+      this.getCurrentPool()?.add(color as any, actualTex, { type: 0, dest: d as any, src: s as any }, null)
     } else {
       this.getCurrentPool()?.addTexturedRect(destOrRect as any)
     }
@@ -417,8 +425,8 @@ export class DrawPoolManager {
   endCreatureInfo(): void {
     this.getCurrentPool()?.endCreatureInfo()
   }
-  texForCanvas(canvas: HTMLCanvasElement | null): unknown {
-    return this.getCurrentPool()?.texForCanvas(canvas) ?? null
+  texForCanvas(canvas: HTMLCanvasElement | null, opts?: { skipAtlas?: boolean }): unknown {
+    return this.getCurrentPool()?.texForCanvas(canvas, opts) ?? null
   }
   isDrawingEffectsOnTop(): boolean {
     return this.getCurrentPool()?.isDrawingEffectsOnTop() ?? true

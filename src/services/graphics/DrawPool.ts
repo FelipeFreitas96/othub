@@ -749,8 +749,8 @@ export class DrawPool {
   }
 
   /** Project: delegate to Painter for texture cache (ThingType.draw). */
-  texForCanvas(canvas: HTMLCanvasElement | null): unknown {
-    return (g_painter as any).texForCanvas?.(canvas) ?? null
+  texForCanvas(canvas: HTMLCanvasElement | null, opts?: { skipAtlas?: boolean }): unknown {
+    return (g_painter as any).texForCanvas?.(canvas, opts) ?? null
   }
 
   /** Project: ThingType uses this for framebuffer path. */
@@ -785,24 +785,29 @@ export class DrawPool {
   }
 
   /** OTC addTexturedRect – enqueue rect; dest/src in pixels (1 unit = 1 pixel). */
-  addTexturedRect(rect: DrawRect & { texture?: unknown; color?: Color }): void {
+  addTexturedRect(rect: DrawRect & { texture?: unknown; color?: Color; src?: { x?: number; y?: number; width?: number; height?: number } }): void {
     if (!rect?.texture) return
     const TILE_PIXELS = 32
     const px = rect.pixelX ?? (rect.tileX ?? 0) * TILE_PIXELS
     const py = rect.pixelY ?? (rect.tileY ?? 0) * TILE_PIXELS
     const pw = rect.pixelWidth ?? (rect.width ?? 1) * TILE_PIXELS
     const ph = rect.pixelHeight ?? (rect.height ?? 1) * TILE_PIXELS
-    // add() returns early when texture is set but method.src has no width/height. Use actual texture size for src so UVs normalize to 0-1 (Painter divides by texture image size).
-    const texImg = (rect.texture as { image?: { width?: number; height?: number } })?.image
-    const srcW = texImg?.width ?? pw
-    const srcH = texImg?.height ?? ph
+    const tex = rect.texture as { texture?: unknown; src?: { x?: number; y?: number; width?: number; height?: number }; image?: { width?: number; height?: number } }
+    const isAtlasEntry = tex && typeof tex.texture !== 'undefined' && tex.src && tex.src.width != null
+    const actualTexture = isAtlasEntry ? tex.texture : rect.texture
+    const srcOverride = rect.src ?? (isAtlasEntry ? tex.src : undefined)
+    const texImg = (actualTexture as { image?: { width?: number; height?: number } })?.image
+    const srcW = srcOverride?.width ?? texImg?.width ?? pw
+    const srcH = srcOverride?.height ?? texImg?.height ?? ph
+    const srcX = srcOverride?.x ?? 0
+    const srcY = srcOverride?.y ?? 0
     const method: DrawMethod = {
       type: DrawMethodType.RECT,
       dest: { x: px, y: py, width: pw, height: ph },
-      src: { x: 0, y: 0, width: srcW, height: srcH },
+      src: { x: srcX, y: srcY, width: srcW, height: srcH },
       intValue: rect.z ?? 0,
     }
-    this.add(rect.color ?? {}, rect.texture, method, null)
+    this.add(rect.color ?? {}, actualTexture, method, null)
   }
 
   addFilledRect(rect: { x: number; y: number; width: number; height: number }, color: { r: number; g: number; b: number }): void {
@@ -960,7 +965,7 @@ export class DrawPool {
         ctx.fillText(d.text, cx, cy)
       }
     }
-    const tex = (g_painter as any).texForCanvas?.(canvas)
+    const tex = (g_painter as any).texForCanvas?.(canvas, { skipAtlas: true })
     if (!tex) return
     const TILE = 32
     this.addTexturedRect({

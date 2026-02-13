@@ -5,6 +5,7 @@ import { DrawPoolType } from '../services/graphics/DrawPool'
 import { loadThings } from '../services/protocol/things'
 import { g_map } from '../services/client/ClientMap'
 import { g_drawPool } from '../services/graphics/DrawPoolManager'
+import { g_painter } from '../services/graphics/Painter'
 import { useWalkController } from '../modules/game_walk'
 import { g_graphics } from '../services/graphics/Graphics'
 import { g_player } from '../services/client/LocalPlayer'
@@ -74,6 +75,7 @@ export default function GameMapPanel() {
 
     // Ensure draw pools are initialized (idempotent; also called at module level and in App.jsx)
     g_drawPool.init(32)
+    g_painter.setUseTextureAtlas(!!getClientOptions().useTextureAtlas)
 
     // UIMap owns MapView and registers with g_map (OTC: m_drawDimension 18x14)
     uiMapRef.current = new UIMap(host, 18, 14)
@@ -329,6 +331,7 @@ export default function GameMapPanel() {
     })
 
     const unsubOptions = subscribeClientOptions((opts) => {
+      g_painter.setUseTextureAtlas(!!opts?.useTextureAtlas)
       crosshairCursorEnabled = !!opts?.crosshairCursor
       applyIdleCursor()
     })

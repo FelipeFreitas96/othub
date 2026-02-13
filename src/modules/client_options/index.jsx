@@ -338,6 +338,7 @@ function renderPanel(panelId, options, setOption, setAllOptions) {
             <OptionCheck label="Full Screen Mode" checked={options.fullscreen} onChange={(v) => setOption('fullscreen', v)} />
             <OptionCheck label="V-Sync" checked={options.vsync} onChange={(v) => setOption('vsync', v)} />
             <OptionCheck label="Show frame rate" checked={options.showFps} onChange={(v) => setOption('showFps', v)} />
+            <OptionCheck label="Use texture atlas (lazy)" checked={options.useTextureAtlas} onChange={(v) => setOption('useTextureAtlas', v)} />
             <OptionSlider
               label="Game framerate limit"
               value={options.backgroundFrameRate}

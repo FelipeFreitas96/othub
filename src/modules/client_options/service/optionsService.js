@@ -67,6 +67,7 @@ const DEFAULT_OPTIONS = {
   fullscreen: false,
   vsync: true,
   showFps: false,
+  useTextureAtlas: true,
   backgroundFrameRate: 501,
   optimizeFps: true,
   forceEffectOptimization: false,

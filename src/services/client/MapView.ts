@@ -54,6 +54,8 @@ export class MapView {
   m_cachedFirstVisibleFloor: number
   m_cachedLastVisibleFloor: number
   m_cachedVisibleTiles: any[]
+  /** Cache por floor para evitar filter() em cada z no drawFloor. */
+  private m_cachedVisibleTilesByFloor: Map<number, Array<{ z: number; tile: any; x: number; y: number }>> = new Map()
   /** OTC mapview.h: m_updateVisibleTiles – true quando precisa rodar updateVisibleTiles(). */
   m_updateVisibleTiles: boolean
   /** OTC mapview.h: m_updateMapPosInfo – true quando srcRect/drawOffset precisam de recálculo. */
@@ -691,6 +693,7 @@ export class MapView {
 
     // OTC L296-299: clear current visible tiles cache (per-floor in C++; we use a flat list)
     this.m_cachedVisibleTiles = []
+    this.m_cachedVisibleTilesByFloor.clear()
 
     // OTC L305-314: when camera changed, recompute first/last floor and set floorMin/Max
     const lastCam = this.m_lastCameraPosition
@@ -741,7 +744,11 @@ export class MapView {
             if (!inTransparencyMode || (tilePosZ < cameraPos.z && tile.isCovered(this.m_cachedFirstVisibleFloor))) addTile = false
           }
           if (addTile) {
-            this.m_cachedVisibleTiles.push({ z: iz, tile, x: ix, y: iy })
+            const entry = { z: iz, tile, x: ix, y: iy }
+            this.m_cachedVisibleTiles.push(entry)
+            let arr = this.m_cachedVisibleTilesByFloor.get(iz)
+            if (!arr) { arr = []; this.m_cachedVisibleTilesByFloor.set(iz, arr) }
+            arr.push(entry)
             tile.onAddInMapView()
           }
           if (addTile) {
@@ -800,7 +807,7 @@ export class MapView {
         z < this.m_cachedFirstVisibleFloor &&
         _camera.coveredUp(camPos.z - z)
 
-      const tilesOnFloor = this.m_cachedVisibleTiles.filter((e: { z: number }) => e.z === z)
+      const tilesOnFloor = this.m_cachedVisibleTilesByFloor.get(z) ?? []
 
       const viewPort = this.m_viewport
       for (const entry of tilesOnFloor) {
