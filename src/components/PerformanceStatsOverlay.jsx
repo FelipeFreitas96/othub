@@ -1,6 +1,6 @@
 /**
  * Performance stats overlay – rendered when "Show frame rate" is enabled.
- * Displays FPS, object count, creatures, and other render details in the left corner.
+ * Uses ref + innerHTML for updates to avoid React re-renders (FPS improvement).
  */
 import { useEffect, useState, useRef } from 'react'
 import { getClientOptions, subscribeClientOptions } from '../modules/client_options/service/optionsService'
@@ -10,6 +10,12 @@ import { g_game } from '../services/client/Game'
 import { g_graphics } from '../services/graphics/Graphics'
 
 const FPS_SAMPLES = 30
+const UPDATE_THROTTLE_MS = 200
+
+function escapeHtml(s) {
+  if (s == null) return ''
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
 
 function getStats() {
   const creatures = g_map?.creatures ?? g_map?.m_knownCreatures
@@ -55,10 +61,10 @@ function getStats() {
 
 export default function PerformanceStatsOverlay() {
   const [options, setOptions] = useState(() => getClientOptions())
-  const [stats, setStats] = useState(getStats)
-  const [fps, setFps] = useState(0)
+  const contentRef = useRef(null)
   const frameTimesRef = useRef([])
   const lastTimeRef = useRef(0)
+  const lastUpdateRef = useRef(0)
   const rafRef = useRef(0)
 
   useEffect(() => {
@@ -76,34 +82,39 @@ export default function PerformanceStatsOverlay() {
         const times = frameTimesRef.current
         times.push(dt)
         if (times.length > FPS_SAMPLES) times.shift()
-        const avg = times.reduce((a, b) => a + b, 0) / times.length
-        setFps(Math.round(1000 / avg))
       }
-      setStats(getStats())
+      if (now - lastUpdateRef.current >= UPDATE_THROTTLE_MS && contentRef.current) {
+        lastUpdateRef.current = now
+        const times = frameTimesRef.current
+        const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0
+        const fps = avg > 0 ? Math.round(1000 / avg) : 0
+        const stats = getStats()
+        const poolEntries = Object.entries(stats.poolBreakdown || {})
+        const lines = [
+          `FPS: ${fps}`,
+          `Draw objs: ${stats.drawObjectCount}`,
+          `Creatures: ${stats.creatureCount}`,
+          `Tiles: ${stats.tileCount}`,
+          `Missiles: ${stats.missileCount}`,
+          `Animated Text: ${stats.animatedTextCount}`,
+          `Static Text: ${stats.staticTextCount}`,
+          ...poolEntries.map(([k, v]) => `  ${k}: ${v}`),
+          `Viewport: ${stats.viewportWidth}×${stats.viewportHeight}`,
+          stats.ping >= 0 ? `Ping: ${stats.ping}ms` : null,
+        ].filter(Boolean)
+        const html =
+          '<div class="text-green-300 font-semibold text-[10px] uppercase tracking-wider mb-1">Render Stats</div>' +
+          lines.map((l) => `<div class="text-green-400/95">${escapeHtml(l)}</div>`).join('')
+        contentRef.current.innerHTML = html
+      }
     }
     lastTimeRef.current = performance.now()
+    lastUpdateRef.current = 0
     rafRef.current = requestAnimationFrame(tick)
-    return () => {
-      cancelAnimationFrame(rafRef.current)
-    }
+    return () => cancelAnimationFrame(rafRef.current)
   }, [options?.showFps])
 
   if (!options?.showFps) return null
-
-  const poolEntries = Object.entries(stats.poolBreakdown || {})
-
-  const lines = [
-    `FPS: ${fps}`,
-    `Draw objs: ${stats.drawObjectCount}`,
-    `Creatures: ${stats.creatureCount}`,
-    `Tiles: ${stats.tileCount}`,
-    `Missiles: ${stats.missileCount}`,
-    `Animated Text: ${stats.animatedTextCount}`,
-    `Static Text: ${stats.staticTextCount}`,
-    ...poolEntries.map(([k, v]) => `  ${k}: ${v}`),
-    `Viewport: ${stats.viewportWidth}×${stats.viewportHeight}`,
-    stats.ping >= 0 ? `Ping: ${stats.ping}ms` : null,
-  ].filter(Boolean)
 
   return (
     <div
@@ -111,14 +122,12 @@ export default function PerformanceStatsOverlay() {
         bg-black/75 text-green-400 border border-green-600/50 rounded px-2 py-1.5 shadow-lg"
       style={{ minWidth: '160px' }}
     >
-      <div className="text-green-300 font-semibold text-[10px] uppercase tracking-wider mb-1">
-        Render Stats
-      </div>
-      {lines.map((line, i) => (
-        <div key={i} className="text-green-400/95">
-          {line}
+      <div ref={contentRef}>
+        <div className="text-green-300 font-semibold text-[10px] uppercase tracking-wider mb-1">
+          Render Stats
         </div>
-      ))}
+        <div className="text-green-400/95">Loading...</div>
+      </div>
     </div>
   )
 }
