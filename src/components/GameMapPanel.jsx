@@ -10,6 +10,7 @@ import { g_graphics } from '../services/graphics/Graphics'
 import { g_player } from '../services/client/LocalPlayer'
 import { g_game } from '../services/client/Game'
 import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from './ContextMenu'
+import PerformanceStatsOverlay from './PerformanceStatsOverlay'
 import { getClientOptions, subscribeClientOptions } from '../modules/client_options/service/optionsService'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
@@ -399,10 +400,11 @@ export default function GameMapPanel() {
 
   return (
     <div
-      className="flex-1 min-w-0 m-0.5 p-1 overflow-hidden flex items-center justify-center bg-no-repeat bg-cover bg-center border-4 border-ot-border"
+      className="flex-1 min-w-0 m-0.5 p-1 overflow-hidden flex items-center justify-center bg-no-repeat bg-cover bg-center border-4 border-ot-border relative"
       style={{ backgroundImage: `url('${IMG.panelMap}')` }}
     >
       <div ref={hostRef} className="w-full h-full bg-ot-dark/80" />
+      <PerformanceStatsOverlay />
       <ContextMenu open={mapContextMenu} onClose={closeMapContextMenu}>
         {canWalkHere && (
           <ContextMenuItem onClick={() => executeMapMenuAction('walk')}>

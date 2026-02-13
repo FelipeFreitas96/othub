@@ -262,6 +262,38 @@ export class DrawPoolManager {
     }
   }
 
+  /** Project: total draw objects across all pools (for performance overlay). */
+  getTotalDrawObjectCount(): number {
+    let total = 0
+    for (let i = 0; i < DrawPoolType.LAST; i++) {
+      const pool = this.m_pools[i]
+      if (pool?.isEnabled?.()) {
+        const list = pool.m_objectsDraw?.[1]
+        if (Array.isArray(list)) total += list.length
+      }
+    }
+    return total
+  }
+
+  /** Project: draw object count per pool type (for performance overlay details). */
+  getDrawObjectCountByPool(): Record<string, number> {
+    const names: Record<number, string> = {
+      [DrawPoolType.MAP]: 'Map',
+      [DrawPoolType.CREATURE_INFORMATION]: 'CreatureInfo',
+      [DrawPoolType.LIGHT]: 'Light',
+      [DrawPoolType.FOREGROUND_MAP]: 'FgMap',
+      [DrawPoolType.FOREGROUND]: 'Foreground',
+    }
+    const out: Record<string, number> = {}
+    for (let i = 0; i < DrawPoolType.LAST; i++) {
+      const pool = this.m_pools[i]
+      const list = pool?.isEnabled?.() ? pool.m_objectsDraw?.[1] : null
+      const count = Array.isArray(list) ? list.length : 0
+      if (count > 0) out[names[i] ?? `Pool${i}`] = count
+    }
+    return out
+  }
+
   /** OTC: getAtlasStats */
   getAtlasStats(): string {
     const mapAtlas = this.get(DrawPoolType.MAP)?.getAtlas()
