@@ -148,6 +148,22 @@ export class Position {
     return new Position(this.x + dx, this.y + dy, this.z + dz)
   }
 
+  /** Write translated coords into this instance (avoids allocation). For hot-path pooling. */
+  setTranslated(src: { x: number; y: number; z: number }, dx: number, dy: number, dz = 0): this {
+    this.x = src.x + dx
+    this.y = src.y + dy
+    this.z = src.z + dz
+    return this
+  }
+
+  /** Copy from obj into this instance (avoids allocation). */
+  setFrom(obj: { x: number; y: number; z: number }): this {
+    this.x = obj.x
+    this.y = obj.y
+    this.z = obj.z
+    return this
+  }
+
   // Get all 8 positions around this one
   getPositionsAround(): Position[] {
     const positions: Position[] = []

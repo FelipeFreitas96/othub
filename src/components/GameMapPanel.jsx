@@ -1,5 +1,5 @@
 // ui/components/GameMapPanel.jsx
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import { UIMap } from '../services/client/UIMap'
 import { DrawPoolType } from '../services/graphics/DrawPool'
 import { loadThings } from '../services/protocol/things'
@@ -13,10 +13,16 @@ import { g_game } from '../services/client/Game'
 import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from './ContextMenu'
 import PerformanceStatsOverlay from './PerformanceStatsOverlay'
 import { getClientOptions, subscribeClientOptions } from '../modules/client_options/service/optionsService'
+import { registerGameLoop, rescheduleGameLoop } from '../services/framework/GameLoop'
+import { recordFrameTiming } from '../services/framework/FrameProfiler'
 
 const IMG = { panelMap: '/images/ui/panel_map.png' }
 
-export default function GameMapPanel() {
+// Throttle mouse move: process at most once per frame
+let mouseMoveScheduled = false
+let pendingMousePoint = null
+
+function GameMapPanel() {
   const hostRef = useRef(null)
   const uiMapRef = useRef(null)
   const [mapContextMenu, setMapContextMenu] = useState(null)
@@ -32,9 +38,9 @@ export default function GameMapPanel() {
   // Initialize walk controller (handles WASD, arrows, numpad)
   useWalkController()
 
-  const closeMapContextMenu = () => setMapContextMenu(null)
+  const closeMapContextMenu = useCallback(() => setMapContextMenu(null), [])
 
-  const executeMapMenuAction = (action) => {
+  const executeMapMenuAction = useCallback((action) => {
     if (!mapContextMenu) return
 
     const targetCreature = mapContextMenu.attackCreature ?? mapContextMenu.creatureThing ?? null
@@ -67,7 +73,7 @@ export default function GameMapPanel() {
     }
 
     closeMapContextMenu()
-  }
+  }, [mapContextMenu, closeMapContextMenu])
 
   useEffect(() => {
     const host = hostRef.current
@@ -163,7 +169,16 @@ export default function GameMapPanel() {
       if (!uiMap) return
 
       if (isInsideHost(event.clientX, event.clientY)) {
-        uiMap.onMouseMove?.(getMousePoint(event))
+        pendingMousePoint = getMousePoint(event)
+        if (!mouseMoveScheduled) {
+          mouseMoveScheduled = true
+          requestAnimationFrame(() => {
+            mouseMoveScheduled = false
+            if (pendingMousePoint && uiMapRef.current) {
+              uiMapRef.current.onMouseMove?.(pendingMousePoint)
+            }
+          })
+        }
       }
 
       if (!dragState.active || dragState.dragging) return
@@ -313,11 +328,18 @@ export default function GameMapPanel() {
       const h = host.clientHeight ?? 0
       if (w <= 0 || h <= 0) return
       g_graphics.setViewport(w, h)
+      let t0 = performance.now()
       uiMapRef.current.draw(DrawPoolType.MAP)
+      const t1 = performance.now()
       uiMapRef.current.draw(DrawPoolType.LIGHT)
+      const t2 = performance.now()
       uiMapRef.current.draw(DrawPoolType.CREATURE_INFORMATION)
+      const t3 = performance.now()
       uiMapRef.current.draw(DrawPoolType.FOREGROUND_MAP)
+      const t4 = performance.now()
       g_drawPool.draw()
+      const t5 = performance.now()
+      recordFrameTiming(0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4)
     }
 
     if (g_map.center?.x != null) {
@@ -334,6 +356,7 @@ export default function GameMapPanel() {
       g_painter.setUseTextureAtlas(!!opts?.useTextureAtlas)
       crosshairCursorEnabled = !!opts?.crosshairCursor
       applyIdleCursor()
+      rescheduleGameLoop()
     })
     applyIdleCursor()
 
@@ -370,18 +393,17 @@ export default function GameMapPanel() {
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
 
-    let raf = 0
-    const loop = () => {
-      raf = requestAnimationFrame(loop)
+    const unregisterLoop = registerGameLoop(() => {
       const hasCenter = g_map.center?.x != null
-      if (uiMapRef.current && hasCenter) {
+      if (uiMapRef.current && host && hasCenter) {
         drawAllPanesAndRender()
       }
-    }
-    loop()
+    })
 
     return () => {
-      cancelAnimationFrame(raf)
+      mouseMoveScheduled = false
+      pendingMousePoint = null
+      unregisterLoop()
       resizeObserver.disconnect()
       window.removeEventListener('ot:map', onMap)
       window.removeEventListener('ot:mapMove', onMapMove)
@@ -446,3 +468,5 @@ export default function GameMapPanel() {
     </div>
   )
 }
+
+export default memo(GameMapPanel)

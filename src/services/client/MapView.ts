@@ -28,6 +28,14 @@ import { MessageModeEnum } from './Const'
 const TILE_PIXELS = 32
 // OTClient: drawDimension = visibleDimension + Size(3, 3)
 const DRAW_DIMENSION_MARGIN_TILES = 3
+const EMPTY_TILES: Array<{ z: number; tile: any; x: number; y: number }> = []
+
+/** Debug: breakdown de drawFloor quando > 50ms. Ativar para profile (custo ~0.1ms por tile). */
+const DRAW_FLOOR_PROFILE = false
+let s_lastFloorBreakdown: { tileDrawMs: number; missileMs: number; flushMs: number; tileCount: number } | null = null
+export function getDrawFloorBreakdown() {
+  return s_lastFloorBreakdown
+}
 
 interface AwareRange {
   left: number
@@ -89,6 +97,11 @@ export class MapView {
   m_lightView: LightView
   /** OTC: m_virtualCenterOffset = (drawDimension/2 - Size(1)).toPoint() – mapview.cpp L489. */
   m_virtualCenterOffset: Point = { x: 0, y: 0 }
+  /** Scratch position reused in updateVisibleTiles to reduce GC pressure. */
+  private m_scratchPos = new Position()
+  /** Scratch for drawFloor: Point 2D e Position da câmera. */
+  private m_scratchPoint: Point = { x: 0, y: 0 }
+  private m_scratchCamera = new Position()
   /** OTC mapview.h: cache de viewport por direção + viewport atual. */
   private m_viewPortDirection: Map<number, AwareRange> = new Map()
   private m_viewport: AwareRange = { left: 0, top: 0, right: 0, bottom: 0 }
@@ -333,6 +346,15 @@ export class MapView {
       x: (vcx + (position.x - rel.x) - (rel.z - position.z)) * TILE_PIXELS,
       y: (vcy + (position.y - rel.y) - (rel.z - position.z)) * TILE_PIXELS,
     }
+  }
+
+  /** Escreve em out (evita alocação). */
+  transformPositionTo2DInto(out: { x: number; y: number }, position: Position, relativePosition?: Position): void {
+    const rel = relativePosition ?? this.m_posInfo.camera ?? this.getCameraPosition()
+    const vcx = this.m_virtualCenterOffset.x
+    const vcy = this.m_virtualCenterOffset.y
+    out.x = (vcx + (position.x - rel.x) - (rel.z - position.z)) * TILE_PIXELS
+    out.y = (vcy + (position.y - rel.y) - (rel.z - position.z)) * TILE_PIXELS
   }
 
   /** OTC: MapView::getPosition(mousePos). */
@@ -731,7 +753,7 @@ export class MapView {
       for (let diagonal = 0; diagonal < numDiagonals; diagonal++) {
         const advance = (diagonal >= h) ? diagonal - h : 0
         for (let iy = diagonal - advance, ix = advance; iy >= 0 && ix < w; iy--, ix++) {
-          const tilePos = cameraPos.translated(ix - vcx, iy - vcy).clone()
+          const tilePos = this.m_scratchPos.setTranslated(cameraPos, ix - vcx, iy - vcy)
           if (!tilePos.coveredUp(cameraPos.z - iz)) continue
           const tile = g_map.getTile(tilePos)
           if (!tile || !tile.isDrawable()) continue
@@ -794,20 +816,31 @@ export class MapView {
   /** OTC mapview.cpp MapView::drawFloor() – 1:1 with C++. */
   drawFloor(): void {
     const cameraPosition = this.m_posInfo.camera
-    const camPos = Position.from(cameraPosition)
     const flags = DRAW_THINGS_FLAGS
+    const scratch = this.m_scratchPoint
+    const scratchCam = this.m_scratchCamera
+    let tileDrawMs = 0
+    let missileMs = 0
+    let flushMs = 0
+    let tileCount = 0
+
+    const doProfile = DRAW_FLOOR_PROFILE
+    const chunkLog: number[] = []
+    const CHUNK = 50
+    const frameStart = performance.now()
+
     for (let z = this.m_floorMax; z >= this.m_floorMin; z--) {
       const fadeLevel = this.getFadeLevel(z)
       if (fadeLevel === 0) break
       if (fadeLevel < 0.99) g_drawPool.setOpacity(fadeLevel)
 
-      const _camera = cameraPosition.clone()
+      scratchCam.setFrom(cameraPosition)
       const alwaysTransparent =
         this.m_floorViewMode === 1 /* Otc::ALWAYS_WITH_TRANSPARENCY */ &&
         z < this.m_cachedFirstVisibleFloor &&
-        _camera.coveredUp(camPos.z - z)
+        scratchCam.coveredUp(cameraPosition.z - z)
 
-      const tilesOnFloor = this.m_cachedVisibleTilesByFloor.get(z) ?? []
+      const tilesOnFloor = this.m_cachedVisibleTilesByFloor.get(z) ?? EMPTY_TILES
 
       const viewPort = this.m_viewport
       for (const entry of tilesOnFloor) {
@@ -817,21 +850,40 @@ export class MapView {
 
         if (alwaysTransparent) {
           const range = g_gameConfig.getTileTransparentFloorViewRange()
-          const inRange = tile.getPosition().isInRange(_camera, range, range, true)
+          const inRange = tile.getPosition().isInRange(scratchCam, range, range, true)
           g_drawPool.setOpacity(inRange ? 0.16 : 0.7)
         }
 
-        tile.draw(this.transformPositionTo2D(tile.getPosition()), flags)  
+        if (doProfile) {
+          const t0 = performance.now()
+          this.transformPositionTo2DInto(scratch, tile.getPosition())
+          tile.draw(scratch, flags)
+          tileDrawMs += performance.now() - t0
+        } else {
+          this.transformPositionTo2DInto(scratch, tile.getPosition())
+          tile.draw(scratch, flags)
+        }
+        tileCount++
+        if (tileCount % CHUNK === 0) chunkLog.push(performance.now() - frameStart)
         if (alwaysTransparent)
           g_drawPool.resetOpacity()
       }
 
-      for (const missile of g_map.getFloorMissiles(z)) {
-        const missileDest = this.transformPositionTo2D(missile.getPosition())
-        missile.draw(missileDest, true, this.m_lightView ?? undefined)
+      if (doProfile) {
+        const m0 = performance.now()
+        for (const missile of g_map.getFloorMissiles(z)) {
+          this.transformPositionTo2DInto(scratch, missile.getPosition())
+          missile.draw(scratch, true, this.m_lightView ?? undefined)
+        }
+        missileMs += performance.now() - m0
+      } else {
+        for (const missile of g_map.getFloorMissiles(z)) {
+          this.transformPositionTo2DInto(scratch, missile.getPosition())
+          missile.draw(scratch, true, this.m_lightView ?? undefined)
+        }
       }
 
-      if (this.m_shadowFloorIntensity > 0 && z === camPos.z + 1) {
+      if (this.m_shadowFloorIntensity > 0 && z === cameraPosition.z + 1) {
         g_drawPool.setOpacity(this.m_shadowFloorIntensity, true)
         g_drawPool.setDrawOrder(DrawOrder.FIFTH)
         g_drawPool.addFilledRect(this.m_rectDimension, { r: 0, g: 0, b: 0 })
@@ -839,12 +891,44 @@ export class MapView {
       }
 
       if (this.canFloorFade()) g_drawPool.resetOpacity()
-      g_drawPool.flush()
+      if (doProfile) {
+        const f0 = performance.now()
+        g_drawPool.flush()
+        flushMs += performance.now() - f0
+      } else {
+        g_drawPool.flush()
+      }
+    }
+
+    const totalMs = performance.now() - frameStart
+    if (totalMs > 100 && chunkLog.length > 0) {
+      const prev = (i: number) => (i > 0 ? chunkLog[i - 1] : 0)
+      const deltas = chunkLog.map((t, i) => Math.round(t - prev(i)))
+      const maxIdx = deltas.indexOf(Math.max(...deltas))
+      const atlasInfo = g_painter.getTextureAtlasStats() ?? ''
+      console.warn(
+        `[drawFloor] Stall ${Math.round(totalMs)}ms, ${tileCount} tiles. ` +
+          `Chunks(50): ${deltas.map((d) => d + 'ms').join(' ')}. Pico: chunk ${maxIdx + 1} (+${deltas[maxIdx]}ms). Atlas: ${atlasInfo}`
+      )
+    }
+
+    if (doProfile && tileCount > 0) {
+      const total = tileDrawMs + missileMs + flushMs
+      if (total >= 50) {
+        s_lastFloorBreakdown = {
+          tileDrawMs: Math.round(tileDrawMs),
+          missileMs: Math.round(missileMs),
+          flushMs: Math.round(flushMs),
+          tileCount,
+        }
+      }
+    } else if (!doProfile) {
+      s_lastFloorBreakdown = null
     }
 
     if (this.m_posInfo.rect && this.m_crosshairTexture && this.m_mousePosition?.isValid?.()) {
-      const point = this.transformPositionTo2D(this.m_mousePosition)
-      const crosshairRect = { x: point.x, y: point.y, width: TILE_PIXELS, height: TILE_PIXELS }
+      this.transformPositionTo2DInto(this.m_scratchPoint, this.m_mousePosition)
+      const crosshairRect = { x: scratch.x, y: scratch.y, width: TILE_PIXELS, height: TILE_PIXELS }
       g_drawPool.addTexturedRect(crosshairRect, this.m_crosshairTexture)
     } else if (this.m_lastHighlightTile) {
       this.m_mousePosition = null

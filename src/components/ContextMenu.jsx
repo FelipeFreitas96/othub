@@ -3,7 +3,7 @@
  * Uso: <ContextMenu open={position} onClose={...}>{itens}</ContextMenu>
  * position: null (fechado) ou { x, y } (clientX/clientY do evento)
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import { createPortal } from 'react-dom'
 
 function clampPosition(x, y, el) {
@@ -28,7 +28,7 @@ export function useContextMenu() {
   return { position, onContextMenu, close }
 }
 
-export default function ContextMenu({ open, onClose, children, className = '', style = {} }) {
+function ContextMenu({ open, onClose, children, className = '', style = {} }) {
   const ref = useRef(null)
   const [clamped, setClamped] = useState(open)
 
@@ -77,7 +77,7 @@ export default function ContextMenu({ open, onClose, children, className = '', s
 }
 
 /** Item de menu (botão com estilo OTClient) */
-export function ContextMenuItem({ onClick, children, className = '', checkbox, checked }) {
+export const ContextMenuItem = memo(function ContextMenuItem({ onClick, children, className = '', checkbox, checked }) {
   const base = 'w-full text-left px-3 py-1.5 text-[11px] text-white hover:bg-white/10 transition-colors'
   const withCheck = 'flex items-center gap-2'
   return (
@@ -96,9 +96,11 @@ export function ContextMenuItem({ onClick, children, className = '', checkbox, c
       {children}
     </button>
   )
-}
+})
 
 /** Separador do menu */
-export function ContextMenuSeparator() {
+export const ContextMenuSeparator = memo(function ContextMenuSeparator() {
   return <div className="border-t border-ot-border my-1.5 mx-2" />
-}
+})
+
+export default ContextMenu

@@ -678,7 +678,7 @@ export class Painter {
   }
 
   flushTextureAtlas(): void {
-    this.m_textureAtlas?.flush()
+    this.m_textureAtlas?.flush(this.m_renderer)
   }
 
   getTextureAtlasStats(): string | null {

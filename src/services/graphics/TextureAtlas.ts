@@ -37,8 +37,11 @@ export class TextureAtlas {
   private m_rowHeight = 0
   private m_size: number
   private m_dirty = false
+  private m_dirtyRegions: Array<{ x: number; y: number; w: number; h: number; source?: HTMLCanvasElement }> = []
+  private m_initialUploadDone = false
   private m_freeSlots: AtlasSlot[] = []
   private m_evictOrder: HTMLCanvasElement[] = []
+  private m_evictionCount = 0
 
   constructor(size = DEFAULT_SIZE) {
     this.m_size = Math.min(size, 4096)
@@ -71,6 +74,7 @@ export class TextureAtlas {
 
   private evictLRU(neededW: number, neededH: number): boolean {
     while (this.m_evictOrder.length > 0) {
+      this.m_evictionCount++
       const canvas = this.m_evictOrder.shift()!
       const entry = this.m_canvasToEntry.get(canvas)
       if (!entry) continue
@@ -115,9 +119,8 @@ export class TextureAtlas {
     const cached = this.m_canvasToEntry.get(canvas)
     if (cached) {
       cached.lastUsed = this.now()
-      const idx = this.m_evictOrder.indexOf(canvas)
-      if (idx >= 0) this.m_evictOrder.splice(idx, 1)
-      this.m_evictOrder.push(canvas)
+      // Não reordenar evictOrder em cache hit – indexOf+splice é O(n) e com milhares de
+      // hits/frame causava spikes de 500–800ms. Evictamos por ordem de inserção (FIFO).
       return {
         texture: this.m_texture,
         src: {
@@ -134,11 +137,13 @@ export class TextureAtlas {
     const slot = this.allocSlot(w, h)
     if (!slot) return null
 
-    this.m_ctx.drawImage(canvas, slot.x, slot.y, w, h)
+    // Não faz drawImage aqui – evita travadinha no hot path. Flush usa texSubImage2D direto do
+    // r.source quando possível. Se precisar de full upload, flush desenha as regiões antes.
     const entry: CachedEntry = { slot: { ...slot }, lastUsed: this.now() }
     this.m_canvasToEntry.set(canvas, entry)
     this.m_evictOrder.push(canvas)
     this.m_dirty = true
+    this.m_dirtyRegions.push({ x: slot.x, y: slot.y, w, h, source: canvas })
 
     return {
       texture: this.m_texture,
@@ -146,15 +151,52 @@ export class TextureAtlas {
     }
   }
 
-  flush(): void {
-    if (this.m_dirty) {
+  /**
+   * Flush: upload ao GPU. Se renderer fornecido e há regiões sujas, usa texSubImage2D
+   * (parcial, ~100x mais rápido que full upload). Senão faz full upload via needsUpdate.
+   */
+  flush(renderer?: THREE.WebGLRenderer | null): void {
+    if (!this.m_dirty) return
+    const usePartial =
+      renderer &&
+      this.m_dirtyRegions.length > 0 &&
+      this.m_dirtyRegions.length < 50 &&
+      (this.m_initialUploadDone || this.m_canvasToEntry.size > 0)
+    const gl = renderer?.getContext()
+    const webglTexture = (this.m_texture as any).__webglTexture as WebGLTexture | undefined
+
+    if (usePartial && webglTexture && gl) {
+      gl.bindTexture(gl.TEXTURE_2D, webglTexture)
+      for (const r of this.m_dirtyRegions) {
+        try {
+          if (r.source && r.source.width === r.w && r.source.height === r.h) {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, gl.RGBA, gl.UNSIGNED_BYTE, r.source)
+          } else if (r.source) {
+            this.m_ctx.drawImage(r.source, r.x, r.y, r.w, r.h)
+            const id = this.m_ctx.getImageData(r.x, r.y, r.w, r.h)
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, gl.RGBA, gl.UNSIGNED_BYTE, id.data)
+          }
+        } catch (_) {}
+      }
+      gl.bindTexture(gl.TEXTURE_2D, null)
+      this.m_initialUploadDone = true
+    } else {
+      for (const r of this.m_dirtyRegions) {
+        if (r.source) this.m_ctx.drawImage(r.source, r.x, r.y, r.w, r.h)
+      }
       this.m_texture.needsUpdate = true
-      this.m_dirty = false
+      this.m_initialUploadDone = true
     }
+    this.m_dirty = false
+    this.m_dirtyRegions.length = 0
   }
 
   getStats(): string {
-    return `atlas ${this.m_canvasToEntry.size} sprites`
+    return `${this.m_canvasToEntry.size} sprites, ${this.m_evictionCount} evict`
+  }
+
+  getEvictionCount(): number {
+    return this.m_evictionCount
   }
 
   dispose(): void {

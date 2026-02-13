@@ -29,6 +29,7 @@
 import { g_map } from './ClientMap'
 import { g_drawPool } from '../graphics/DrawPoolManager'
 import { DrawPoolType } from '../graphics/DrawPool'
+import { recordMapPhase } from '../framework/FrameProfiler'
 import { MapView } from './MapView'
 import { Position } from './Position'
 import { Creature } from './Creature'
@@ -50,6 +51,7 @@ export interface Size {
 export class UIMap {
   m_mapView: MapView
   m_keepAspectRatio: boolean = true
+  private m_mapPhasePreLoadMs = 0
   m_limitVisibleRange: boolean = false
   m_maxZoomIn: number = 3
   m_maxZoomOut: number = 513
@@ -80,8 +82,11 @@ export class UIMap {
       const rect = { x: 0, y: 0, width: vw, height: vh }
       if (drawPane === DrawPoolType.MAP) {
         this.m_mapView.updateRect(rect)
+        const preLoadT0 = performance.now()
         this.m_mapView.preLoad()
+        const preLoadMs = performance.now() - preLoadT0
         this.m_mapView.updateRect(rect)
+        this.m_mapPhasePreLoadMs = preLoadMs
       } else {
         this.m_mapView.updateRect(rect)
       }
@@ -91,9 +96,15 @@ export class UIMap {
     const black = { r: 0, g: 0, b: 0, a: 255 }
 
     if (drawPane === DrawPoolType.MAP) {
+      const drawFloorFn = () => {
+        const t0 = performance.now()
+        this.m_mapView.drawFloor()
+        const drawFloorMs = performance.now() - t0
+        recordMapPhase(this.m_mapPhasePreLoadMs, drawFloorMs)
+      }
       g_drawPool.preDraw(
         drawPane,
-        () => this.m_mapView.drawFloor(),
+        drawFloorFn,
         () => this.m_mapView.registerEvents(),
         rect,
         srcRect,

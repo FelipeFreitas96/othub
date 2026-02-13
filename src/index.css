@@ -66,3 +66,24 @@ body {
 *::-webkit-scrollbar-corner {
   background: #1a1a1a;
 }
+
+/* Performance stats overlay – verde base; linhas que mudam ficam amarelo 0.5s */
+.perf-stats-container {
+  --perf-color: rgb(134 239 172);
+  --perf-line-color: rgb(134 239 172 / 0.95);
+}
+.perf-stats-title {
+  color: var(--perf-color);
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.perf-stats-line {
+  color: var(--perf-line-color);
+  transition: color 0.2s ease;
+}
+.perf-stats-line.perf-stats-line-changed {
+  color: rgb(253 224 71);
+}
